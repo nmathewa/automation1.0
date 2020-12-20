@@ -10,4 +10,4 @@ The multi-receiver capacity of nRF24L01 is having up to 6 channels (pipes) of ra
 ## 20/12/2020
 -----------
 
-![display](images/WhatsApp Image 2020-12-18 at 4.01.58 PM.jpeg)
+![display](automation1.0/images/WhatsApp Image 2020-12-18 at 4.01.58 PM.jpeg)
