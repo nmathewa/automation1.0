@@ -2,12 +2,13 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_PCD8544.h>
 #include <Wire.h>
+
 //#include "DHT.h"
 #include <RF24.h>
 //#define DHTPIN 10
 //#define DHTTYPE DHT11
 #include  "BME280I2C.h"
-//#include <Adafruit_BMP085.h>
+#include <Adafruit_BMP085.h>
 //DHT dht(DHTPIN, DHTTYPE);
 RF24 radio(8,9);
 
@@ -35,7 +36,7 @@ void setup()   {
     //bmp.begin();
     radio.begin();
     radio.openWritingPipe(address);
-    radio.setPALevel(RF24_PA_MIN);
+    radio.setPALevel(RF24_PA_MAX);
     radio.stopListening();
 	//Initialize Display
 	display.begin();
@@ -45,7 +46,7 @@ void setup()   {
 	// Clear the buffer.
 	display.clearDisplay();
     analogWrite(11,10);
-    radio.printDetails();
+    //radio.printDetails();
 }
 
 void loop() {
@@ -59,7 +60,7 @@ void loop() {
     indoor[0] = temp;
     indoor[1] = hum;
     indoor[2] = pre;
-    //data.h = hum;	https://github.com/rocketscream/Low-Power.gitxt[] = string(hum);
+
     radio.write(indoor, sizeof(indoor));
     //float alt = bmp.readAltitude();
     //radio.write(&data, sizeof(MyData));
@@ -85,7 +86,7 @@ void loop() {
         display.print(pre);
         display.print("hPa");
 	    //display.display();
-        Serial.print(pre);
+        //Serial.print(pre);
         //delay(in_delay);
     }
     else {
@@ -101,7 +102,14 @@ void loop() {
         cd = 0;
         //delay(in_delay);
     }
+    Serial.print("PRE: ");
+    Serial.println(pre);
+    Serial.print("HUM: ");
+    Serial.println(hum);
+    Serial.print("TEM: ");
+    Serial.println(temp);
     display.display();
-	delay(1000);
+	delay(5000);
+
         	
 }
