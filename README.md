@@ -29,3 +29,10 @@ The multi-receiver capacity of nRF24L01 is having up to 6 channels (pipes) of ra
    - The network can be expanded in the future
 
 ![](https://www.raspberrypi.org/homepage-9df4b/static/1dfa03d09c1f3e446e8d936dfb92267f/ae23f/6b0defdbbf40792b64159ab8169d97162c380b2c_raspberry-pi-zero-1-1755x1080.jpg)
+
+
+## 14/03/21
+
+![](images/gateway.jpg)
+
+![](images/node1.jpg)
