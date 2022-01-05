@@ -1,0 +1,172 @@
+#include <Arduino.h>
+
+
+#define Bpin 11
+#define Gpin 10
+#define Rpin 9
+#define delayLEDS 
+#define auto
+#define Loop_Delay 30
+int Brightness_R;
+int Brightness_G;
+int Brightness_B;
+int FadeStep_R;  
+int FadeStep_G;
+int FadeStep_B;
+
+#define sensorPin A0
+
+float sensorValue = 0, filteredSignal = 0,
+    //filteredSignalValues[] = {3.4, 3.1, 2.7, 2.4, 2.1, 1.7, 1.3, 0.9, 0.4};
+    filteredSignalValues[] = {8, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.41, 0.3};
+void setup () {
+
+  Serial.begin (9600);
+  //Serial.begin(9600);
+  pinMode(Rpin, OUTPUT);
+  pinMode(Gpin, OUTPUT);
+  pinMode(Bpin, OUTPUT);
+  Brightness_R = 0;
+  Brightness_G = 0;
+  Brightness_B = 0;
+  FadeStep_R = 0;      //0      These setting for normal ROY G BIV
+  FadeStep_G = 325;    //510
+  FadeStep_B = 650;
+}
+
+#ifdef auto
+ void setLEDS (int ipR, int ipG, int ipB) {
+  analogWrite (Rpin, ipR);     // send the red brightness level to the red LED's pin
+  analogWrite (Gpin, ipG);
+  analogWrite (Bpin, ipB);}
+void loop() {
+ 
+//decrement each LED's fade step counter by one at the start of each loop
+    FadeStep_R = FadeStep_R - 1;
+    FadeStep_G = FadeStep_G - 1;
+    FadeStep_B = FadeStep_B - 1;
+    
+//fade red LED according to it's fade step counter.         
+ if (FadeStep_R == -764) {FadeStep_R = 765;}
+ if (FadeStep_R < 0) {Brightness_R = FadeStep_R * -1;}  
+ if (FadeStep_R >= 510) {Brightness_R = FadeStep_R - 510;}
+// if (FadeStep_R == -510) {CycleCountR = CycleCountR + 1;} //count + 1 for each full fade cycle
+ 
+//fade green LED according to it's fade step counter.      
+ if (FadeStep_G == -764) {FadeStep_G = 765;}
+ if (FadeStep_G < 0) {Brightness_G = FadeStep_G * -1;}  
+ if (FadeStep_G >= 510) {Brightness_G = FadeStep_G - 510;}
+// if (FadeStep_G == -510) {CycleCountG = CycleCountG + 1;} //count + 1 for each full fade cycle
+ 
+//fade blue LED according to it's fade step counter.  
+ if (FadeStep_B == -764) {FadeStep_B = 765;}
+ if (FadeStep_B < 0) {Brightness_B = FadeStep_B * -1;}  
+ if (FadeStep_B >= 510) {Brightness_B = FadeStep_B - 510;}
+// if (FadeStep_B == -510) {CycleCountB = CycleCountB + 1;} // count + 1 for each full fade cycle
+  
+//  if step counters are intialized 510 steps appart, -510 is the step in each LED's fade cycle
+//  that it will be on full brightness while the other 2 LED's are off. 
+ 
+    Brightness_B = constrain(Brightness_B, 0, 255);
+    Brightness_G = constrain(Brightness_G, 0, 255);
+    Brightness_R = constrain(Brightness_R, 0, 255); 
+ 
+// if (CycleCountB == 8) {CycleCountB = 0;}  
+// if (CycleCountR == 8) {CycleCountR = 0;}
+// if (CycleCountG == 8) {CycleCountG = 0;}
+    
+// if (CycleCountR == 2) {ColorValue = 1 ;} //set point for pattern to pause on red
+// if (CycleCountR > 2) {ColorValue = 0;}   
+ 
+// if (CycleCountG == 4) {ColorValue = 2;}   //set point for pattern to pause on green
+// if (CycleCountG > 4) {ColorValue = 0;}
+  
+// if (CycleCountB == 6) {ColorValue = 3;}   //set point for pattern to pause on blue
+// if (CycleCountB > 6) {ColorValue = 0;}
+ 
+//Send brightness levels to LED strip
+setLEDS (Brightness_R, Brightness_G, Brightness_B);
+// if (ColorValue == 0) {setLEDS (Brightness_R, Brightness_G, Brightness_B);} // default to fade pattern
+// if (ColorValue == 1) {setLEDS (255, 0, 0);}  //LED strip red
+// if (ColorValue == 2) {setLEDS (0, 255, 0);}  //LED strip green
+// if (ColorValue == 3) {setLEDS (0, 0, 255);}  //LED strip blue
+     
+ //    slow the loop down a bit
+    delay (Loop_Delay);
+ 
+}
+    
+ //    send the LED levels to the Arduino pins
+#endif
+
+#ifndef auto
+void loop () {
+
+  MainFunction();
+}
+
+void MainFunction() {
+
+  sensorValue = (float) analogRead(sensorPin) * (5.0 / 1024.0);
+
+  FilterSignal(sensorValue);
+
+  Serial.print(sensorValue);
+  Serial.print(" ");
+  Serial.println(filteredSignal);
+
+  CompareSignalFiltered(filteredSignal);
+}
+
+void FilterSignal(float sensorSignal) {
+
+  filteredSignal = (0.945 * filteredSignal) + (0.0549 * sensorSignal);
+}
+
+void CompareSignalFiltered(float filteredSignal) {
+
+  if (filteredSignal > filteredSignalValues[0]) {
+    RGBColor(0, 0, 90);
+    Serial.println("Blue");
+  } else if (filteredSignal <= filteredSignalValues[0] && filteredSignal > filteredSignalValues[1]) {
+    Serial.println("Azure");
+    RGBColor(0, 255, 255);
+  } else if (filteredSignal <= filteredSignalValues[1] && filteredSignal > filteredSignalValues[2]) {
+    RGBColor(0, 127, 255);
+    Serial.println("Cyan");
+  } else if (filteredSignal <= filteredSignalValues[2] && filteredSignal > filteredSignalValues[3]) {
+    RGBColor(0, 255, 127);
+    Serial.println("Aqua marine");
+  } else if (filteredSignal <= filteredSignalValues[3] && filteredSignal > filteredSignalValues[4]) {
+    RGBColor(0, 255, 0);
+    Serial.println("Green");
+  } else if (filteredSignal <= filteredSignalValues[4] && filteredSignal > filteredSignalValues[5]) {
+    RGBColor(255, 255, 0);
+    Serial.println("Yellow");
+  } else if (filteredSignal <= filteredSignalValues[5] && filteredSignal > filteredSignalValues[6]) {
+    RGBColor(255, 0, 255);
+    Serial.println("Magenta");
+  } else if (filteredSignal <= filteredSignalValues[6] && filteredSignal > filteredSignalValues[7]) {
+    RGBColor(255, 0, 127);
+    Serial.println("Rose");
+  } else if (filteredSignal <= filteredSignalValues[7] && filteredSignal > filteredSignalValues[8]) {
+    RGBColor(255, 127, 0);
+    Serial.println("Orange");
+  } else if (filteredSignal <= filteredSignalValues[8]) {
+    RGBColor(255, 0, 0);
+    Serial.println("Red");
+  } else {
+    RGBColor(0, 0, 255);
+    Serial.println("Default: Blue");
+  }
+}
+
+void RGBColor(int Rcolor, int Gcolor, int Bcolor) {
+
+  analogWrite(Rpin, Rcolor);
+  analogWrite(Gpin, Gcolor);
+  analogWrite(Bpin, Bcolor);
+
+  delay(1);
+} 
+#endif
