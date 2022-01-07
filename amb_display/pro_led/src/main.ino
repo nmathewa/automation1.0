@@ -9,10 +9,10 @@
 ///// User definitions /////
 
 // Define the number of LEDs
-#define NUM_LEDS 58
+#define NUM_LEDS 50
 
 // Define SPI Pin
-#define PIN 5
+#define PIN 12
 
 // Baudrate, higher rate allows faster refresh rate and more LEDs (defined in /etc/boblight.conf)
 #define serialRate 115200
@@ -26,7 +26,7 @@ CRGB leds[NUM_LEDS];
 void setup()
 {
   
-  FastLED.addLeds<WS2812B, PIN, RGB>(leds, NUM_LEDS);
+  FastLED.addLeds<WS2812, PIN, GRB>(leds, NUM_LEDS);
   
   // initial RGB flash
   LEDS.showColor(CRGB(255, 0, 0));
