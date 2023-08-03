@@ -9,7 +9,8 @@
 ///// User definitions /////
 
 // Define the number of LEDs
-#define NUM_LEDS 50
+#define NUM_LEDS 31
+
 
 // Define SPI Pin
 #define PIN 12
