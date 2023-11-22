@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"name": "esp_pro_audio",
+			"path": "."
+		},
+		{
+			"path": "../../../../../../Temp/audio-reactive-led-strip/python"
+		}
+	],
+	"settings": {}
+}

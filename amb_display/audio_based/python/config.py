@@ -19,7 +19,7 @@ to control the leds connected to it.
 
 if DEVICE == 'esp8266':
     #UDP_IP = '192.168.1.32' device 1
-    UDP_IP = '192.168.1.134'
+    UDP_IP = '192.168.1.32'
     #UDP_IP = '192.168.1.32'
     """IP address of the ESP8266. Must match IP in ws2812_controller.ino"""
     UDP_PORT = 7777
