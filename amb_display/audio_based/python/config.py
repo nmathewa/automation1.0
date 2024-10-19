@@ -58,6 +58,7 @@ GAMMA_TABLE_PATH = os.path.join(os.path.dirname(__file__), 'gamma_table.npy')
 """Location of the gamma correction table"""
 
 MIC_RATE = 44100
+#MIC_RATE = 22050
 """Sampling frequency of the microphone in Hz"""
 
 FPS = 60
