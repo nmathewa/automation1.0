@@ -22,7 +22,8 @@ class GUI:
 
 
         title_scene = QGraphicsScene()
-        self.win = GraphicsLayoutWidget(title_scene)
+        #self.win = GraphicsLayoutWidget(title_scene)
+        self.win = QtWidgets.QWidget()
 
 
         self.win.resize(width, height)
@@ -31,6 +32,7 @@ class GUI:
         #self.layout = QtGui.QVBoxLayout()
         self.layout = QVBoxLayout()
         self.win.setLayout(self.layout)
+        self.win.show()
 
     def add_plot(self, title):
         new_plot = pg.PlotWidget()
@@ -49,7 +51,7 @@ if __name__ == '__main__':
     # Sin plot
     gui.add_plot(title='Sin Plot')
     gui.add_curve(plot_index=0)
-    gui.win.nextRow()
+    #gui.win.nextRow()
     # Cos plot
     gui.add_plot(title='Cos Plot')
     gui.add_curve(plot_index=1)
