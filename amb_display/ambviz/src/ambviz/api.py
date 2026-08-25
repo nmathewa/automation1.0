@@ -95,7 +95,16 @@ class ApiServer:
                 raise ValueError(f"static directory not found: {root}")
             self.static_dir = root
 
-        self._server = ThreadingHTTPServer((host, port), _make_handler(self))
+        try:
+            self._server = ThreadingHTTPServer((host, port), _make_handler(self))
+        except OSError as exc:
+            # A stack trace ending in errno 98 tells you nothing useful; the
+            # actionable fact is which port and that something already has it.
+            raise OSError(
+                f"cannot serve the API on {host}:{port} -- {exc.strerror}. "
+                f"Another ambviz may still be running; try --api-port with a "
+                f"different value, or stop it first."
+            ) from None
         self.address = self._server.server_address
         self._thread: threading.Thread | None = None
         self._serving = False

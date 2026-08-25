@@ -71,6 +71,19 @@ class Features:
     slow: float = 0.0
     """Level on a scene time-scale rather than a frame one -- the mood signal."""
 
+    spread: float = 0.0
+    """Spectral bandwidth in Hz: how far energy is spread around the centroid.
+
+    A voice is narrow, an explosion is wide. Together with level and onset rate
+    this is what separates a dialogue scene from a fight."""
+
+    energy: float = 0.0
+    """How much is going on, 0-1, adaptively rescaled across the film.
+
+    Loud, wideband and transient-rich reads high; quiet, narrow and centred reads
+    low. Effects use it to decide how energetic to be -- the point is not to be
+    subtle always, but to be subtle when the content is."""
+
     @property
     def bands(self) -> int:
         return len(self.mel)

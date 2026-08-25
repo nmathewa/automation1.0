@@ -208,8 +208,12 @@ class Mood:
     """How far speech suppresses the fast layer, 0-1. Film dialogue is centred,
     so it is detectable from the mid-to-side ratio without recognising anything."""
 
-    detail: float = 0.35
-    """Ceiling on the fast layer's contribution, before damping."""
+    detail: float = 1.0
+    """Ceiling on the spectral layer, before scene energy and dialogue scale it.
+
+    1.0 lets a loud, wideband scene reach a fully spectral display; the scene
+    itself decides how close it gets. Lower it to cap how energetic the effect is
+    ever allowed to become."""
 
     audio_weight: float = 1.0
     """Weight of the audio-derived mood. Exists so a picture feed can be blended

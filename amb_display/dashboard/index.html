@@ -923,6 +923,11 @@
 
   $("ctl-effect").addEventListener("change", (e) => {
     editing = null;
+    // Only send a genuine choice. A browser restoring a form on reload fires
+    // change with its remembered value, which would push a stale selection over
+    // whatever the server was actually started with -- the server is the
+    // authority here, not a tab that happens to be open.
+    if (engine && e.target.value === engine.effect) return;
     send({ effect: { name: e.target.value } });
   });
   bindLive($("ctl-brightness"), "brightness",

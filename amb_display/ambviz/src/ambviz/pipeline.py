@@ -67,6 +67,13 @@ class Visualizer:
 
         fps = float(settings.audio.fps)
         self.centroid_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
+        # Each component gets its own range: they have different units and very
+        # different dynamics, so one shared normaliser would let the loudest
+        # dominate.
+        self.level_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
+        self.spread_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
+        self.onset_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
+        self.onset_rate = ExpFilter(0.0, alpha_decay=0.02, alpha_rise=0.15)
         # One frame over the response time: a level envelope that moves over a
         # scene rather than a beat.
         alpha = float(np.clip(1.0 / max(settings.mood.response_seconds * fps, 1.0), 1e-4, 0.5))
@@ -155,6 +162,9 @@ class Visualizer:
             "centroid": round(float(self.features.centroid), 3),
             "dialogue": round(float(self.features.dialogue), 3),
             "slow": round(float(self.features.slow), 4),
+            "spread": round(float(self.features.spread), 1),
+            "energy": round(float(self.features.energy), 3),
+            "mood": self._mood_snapshot(),
             "mel": [round(float(v), 4) for v in self.mel],
             "onset": round(float(self.features.onset), 3),
             "beat": self.features.beat,
@@ -221,7 +231,7 @@ class Visualizer:
             side = np.concatenate(self._roll_side, axis=0).astype(np.float32)
             side_spectrum = np.abs(np.fft.rfft(np.pad(side * self._window, (0, pad))))
 
-        dialogue = self._dialogue(spectrum, side_spectrum)
+        centred = self._centred(spectrum, side_spectrum)
 
         suppression = self.settings.dsp.vocal_suppression
         if suppression > 0.0 and side_spectrum is not None:
@@ -239,13 +249,52 @@ class Visualizer:
         centroid_hz = self._centroid(self.mel)
         centroid = self.centroid_range.update(centroid_hz)
         slow = float(self.slow_level.update(float(np.max(self.mel))))
+        spread = self._spread(self.mel, centroid_hz)
+        # Centred alone is not speech: a fight scene has centred bass and brass
+        # too, and reading that as dialogue damps exactly the scene that should
+        # be most energetic. A voice is centred *and* narrow.
+        narrow = 1.0 - self.spread_range.update(spread)
+        dialogue = float(np.clip(centred * narrow, 0.0, 1.0))
+
+        # A fight scene is loud, wide and full of transients; a dialogue scene is
+        # none of those. Averaging the three normalised components is enough to
+        # tell them apart without recognising anything.
+        rate = float(self.onset_rate.update(1.0 if beat else 0.0))
+        energy = float(np.clip(
+            0.5 * self.level_range.update(slow)
+            + 0.3 * (1.0 - narrow)
+            + 0.2 * self.onset_range.update(rate),
+            0.0, 1.0))
 
         self.features = Features(
             mel=self.mel, volume=self.volume, onset=onset, beat=beat,
             flux=flux, t=elapsed, silent=False,
             centroid=centroid, centroid_hz=centroid_hz, dialogue=dialogue, slow=slow,
+            spread=spread, energy=energy,
         )
         return self._to_strip(self.effect.render(self.features))
+
+    def _mood_snapshot(self) -> dict | None:
+        """Whatever slow state the running effect exposes, or None.
+
+        The mood is the thing being tuned, so it has to be observable -- a hue
+        that will not move is impossible to diagnose from the spectrum alone.
+        """
+        mood = getattr(self.effect, "mood", None)
+        if mood is None:
+            return None
+        source = getattr(self.effect, "mood_source", None)
+        out = {
+            "hue": round(float(mood.hue), 4),
+            "level": round(float(mood.level), 4),
+            "detail": round(float(mood.detail), 4),
+        }
+        if source is not None:
+            out["target"] = round(float(source._last_target), 4)
+            out["smoothed_hz"] = round(float(source._smooth.value), 1)
+            out["range_lo"] = round(float(source._range.low), 1)
+            out["range_hi"] = round(float(source._range.high), 1)
+        return out
 
     def _centroid(self, mel: np.ndarray) -> float:
         """Energy-weighted mean frequency of the filterbank, in Hz."""
@@ -254,7 +303,15 @@ class Visualizer:
             return 0.0
         return float(np.dot(mel, self.mel_bank.center_frequencies) / total)
 
-    def _dialogue(self, mid: np.ndarray, side: np.ndarray | None) -> float:
+    def _spread(self, mel: np.ndarray, centroid_hz: float) -> float:
+        """Spectral bandwidth in Hz -- narrow for a voice, wide for an explosion."""
+        total = float(np.sum(mel))
+        if total <= EPS:
+            return 0.0
+        deviation = self.mel_bank.center_frequencies - centroid_hz
+        return float(np.sqrt(np.dot(mel, deviation ** 2) / total))
+
+    def _centred(self, mid: np.ndarray, side: np.ndarray | None) -> float:
         """How centre-dominated the speech band is, 0-1.
 
         Centre-panned content cancels in ``L - R``, so a large mid relative to

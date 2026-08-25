@@ -32,8 +32,11 @@ class Mood:
     """Brightness before any floor is applied, 0-1."""
 
     detail: float = 0.0
-    """How much fast movement the effect should layer on top, 0-1. Falls toward
-    zero during dialogue."""
+    """How far to cross-fade from a plain wash toward a spectral display, 0-1.
+
+    Not "how much sparkle to add": at 1 the effect is essentially a smoothed
+    ``bars``. Driven by scene energy and damped by dialogue, so a fight scene
+    gets a spectrum and a quiet conversation gets a wash."""
 
     weight: float = 1.0
     """Confidence in this mood, for blending several sources."""
@@ -96,6 +99,8 @@ class AudioMood:
         alpha = float(np.clip(1.0 / max(cfg.response_seconds * settings.audio.fps, 1.0),
                               1e-4, 0.5))
         self._smooth = ExpFilter(0.0, alpha_decay=alpha, alpha_rise=alpha)
+        self._primed = False
+        self._last_target = 0.5
         self._range = AdaptiveRange(seconds=cfg.range_seconds, fps=float(settings.audio.fps))
         self._hue = RateLimiter(cfg.hue_rate, value=0.5, deadband=cfg.deadband, wrap=True)
         self._level = RateLimiter(1.0 / max(cfg.response_seconds, 1e-3), value=0.0)
@@ -108,15 +113,22 @@ class AudioMood:
 
         # Smooth in Hz, learn the range of the smoothed signal, then cap the
         # speed. Each step depends on the one before it.
+        # Start the smoother at the first real value. Starting from zero makes
+        # it ramp up over tens of seconds, and the range then learns that ramp
+        # instead of the content.
+        if not self._primed and features.centroid_hz > 0.0:
+            self._smooth.value = features.centroid_hz
+            self._primed = True
         smoothed = float(self._smooth.update(features.centroid_hz))
         target = self._range.update(smoothed)
+        self._last_target = target
         hue = self._hue.update(target, dt)
         level = self._level.update(float(np.clip(features.slow, 0.0, 1.0)), dt)
 
-        # Dialogue is centred, so a high mid-to-side ratio in the speech band
-        # means someone is talking -- and that is exactly when fast movement
-        # becomes irritating rather than expressive.
-        detail = cfg.detail * (1.0 - cfg.dialogue_damping * features.dialogue)
+        # Scene energy decides how energetic to be; dialogue pulls it back. The
+        # point is not to be subtle always -- a fight scene should look close to
+        # bars, just smoother -- but to be subtle when the content is.
+        detail = cfg.detail * features.energy * (1.0 - cfg.dialogue_damping * features.dialogue)
 
         return Mood(
             hue=hue,

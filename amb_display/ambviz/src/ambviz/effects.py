@@ -303,16 +303,17 @@ class SolidEffect(Effect):
 
 
 class CinemaEffect(Effect):
-    """A slow wash with just enough detail on top, for film.
+    """A wash that becomes a spectrum when the scene earns it.
 
-    Two layers. The slow one sets hue and brightness from the mood and moves at
-    a capped rate, so a scene changes colour over seconds. The fast one adds
-    level and onset movement, but its gain comes *from* the slow layer and is
-    damped by the dialogue indicator -- so during speech it approaches zero and
-    the light simply holds.
+    The mistake in the first version was treating "subtle" as the goal. It is
+    not: a quiet conversation should barely move, and a fight scene should look
+    close to ``bars`` -- just smoother. So this is a cross-fade rather than a
+    wash with decoration on top.
 
-    The brightness floor matters more than it looks. A strip snapping fully dark
-    during a quiet line draws far more attention than one that drifts.
+    At one end, a single slowly drifting colour with a brightness floor. At the
+    other, the Mel bands across the strip, smoothed far harder than ``bars``
+    smooths them so the result reads as motion rather than flicker. Scene energy
+    picks the point between, and dialogue pulls it back toward the wash.
     """
 
     clone_across_nodes = False
@@ -321,30 +322,34 @@ class CinemaEffect(Effect):
         super().__init__(settings, width)
         self.mood_source = AudioMood(settings)
         self.mood = None
-        self._detail = ExpFilter(np.tile(0.0, width), alpha_decay=0.06, alpha_rise=0.5)
+        # Much heavier smoothing than BarsEffect uses: the same information,
+        # moving at a pace that suits a film rather than a dance floor.
+        self.bands = ExpFilter(np.tile(0.01, settings.dsp.fft_bins),
+                               alpha_decay=0.02, alpha_rise=0.10)
+        self._mix = ExpFilter(0.0, alpha_decay=0.01, alpha_rise=0.03)
 
     def render(self, features: Features) -> np.ndarray:
         cfg = self.settings.mood
         self.mood = blend([self.mood_source.update(features)])
         m = self.mood
 
-        # A gentle arch rather than a flat wash, so the strip has shape even
-        # when nothing is moving.
         x = np.linspace(0.0, 1.0, self.width)
-        shape = 0.75 + 0.25 * np.cos((x - 0.5) * np.pi)
+        # A gentle arch, so even a still strip has some shape to it.
+        wash_value = max(m.level, cfg.floor) * (0.75 + 0.25 * np.cos((x - 0.5) * np.pi))
+        wash_hue = (m.hue + np.linspace(-0.02, 0.02, self.width)) % 1.0
 
-        base = max(m.level, cfg.floor)
-        detail = np.zeros(self.width)
-        if m.detail > 0.0:
-            # Movement drifts along the strip rather than flashing in place.
-            wave = 0.5 + 0.5 * np.sin(x * 2.4 * np.pi - features.t * 0.55)
-            detail = self._detail.update(wave * (0.35 * features.slow + 0.65 * features.onset))
-            detail = detail * m.detail
+        # Smoothed spectrum, mapped the way bars maps it.
+        levels = np.clip(self.bands.update(np.copy(features.mel)), 0.0, 1.5)
+        spectral_value = np.clip(interpolate(levels, self.width), 0.0, 1.0)
+        spectral_hue = (m.hue + np.linspace(-0.16, 0.16, self.width)) % 1.0
 
-        value = np.clip(base * shape + detail, 0.0, 1.0)
-        # Hue drifts very slightly along the strip so it is not one flat colour.
-        hue = (m.hue + np.linspace(-0.02, 0.02, self.width)) % 1.0
-        return _hsv_to_rgb(hue, m.saturation, value) * 255.0
+        # Cross-fade slowly, so the scene changing does not snap the look.
+        mix = float(self._mix.update(m.detail))
+        value = np.clip(wash_value * (1.0 - mix) + spectral_value * mix, 0.0, 1.0)
+        value = np.maximum(value, cfg.floor * (1.0 - mix))
+        hue = np.where(mix > 0.5, spectral_hue, wash_hue)
+        saturation = m.saturation * (1.0 - 0.15 * mix)
+        return _hsv_to_rgb(hue, saturation, value) * 255.0
 
 
 EFFECTS: dict[str, type[Effect]] = {

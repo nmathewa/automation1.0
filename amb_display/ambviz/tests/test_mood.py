@@ -153,14 +153,63 @@ def test_time_advances_with_the_audio_not_the_clock():
     assert v.features.t == pytest.approx(1.0, abs=0.05)
 
 
-def test_dialogue_damps_the_fast_layer():
-    s = Settings.load()
-    mood = AudioMood(s)
+def test_dialogue_damps_the_spectral_layer():
+    """Same scene energy, different content: speech pulls back toward the wash."""
     from ambviz.features import Features
 
-    talking = mood.update(Features(mel=np.zeros(24), volume=0.2, dialogue=1.0, t=1.0))
-    music = mood.update(Features(mel=np.zeros(24), volume=0.2, dialogue=0.0, t=2.0))
-    assert talking.detail < music.detail
+    mood = AudioMood(Settings.load())
+    talking = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.9, dialogue=1.0, t=1.0))
+    action = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.9, dialogue=0.0, t=2.0))
+    assert talking.detail < action.detail
+
+
+def test_scene_energy_gates_the_spectral_layer():
+    """A quiet scene stays a wash however uncentred it is."""
+    from ambviz.features import Features
+
+    mood = AudioMood(Settings.load())
+    quiet = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.05, dialogue=0.0, t=1.0))
+    loud = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.95, dialogue=0.0, t=2.0))
+    assert quiet.detail < loud.detail * 0.3
+
+
+def test_a_fight_scene_reaches_the_spectrum_and_dialogue_does_not():
+    """The behaviour the effect exists for, on one continuous timeline.
+
+    Run separately each scene would be normalised to its own range and both
+    would land mid-scale -- a film is continuous, and so is the measurement.
+    """
+    rng = np.random.default_rng(0)
+
+    def talk(i, n):
+        t = (np.arange(n) + i * n) / SR
+        f0 = 220 + 60 * np.sin(2 * np.pi * 0.4 * t)
+        v = np.sin(2 * np.pi * f0 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3.5 * t)) * 0.25
+        return np.stack([v, v], axis=1) * 7000          # centred and narrow
+
+    def fight(i, n):
+        t = (np.arange(n) + i * n) / SR
+        hits = np.exp(-((t * 4) % 1.0) * 9) * np.sin(2 * np.pi * 70 * t) * 1.2
+        brass = 0.5 * np.sin(2 * np.pi * 330 * t) + 0.4 * np.sin(2 * np.pi * 495 * t)
+        left = (rng.normal(0, 1, n) * 0.5 + hits + brass) * 0.7
+        right = (rng.normal(0, 1, n) * 0.5 + hits + brass * 0.8) * 0.7
+        return np.stack([left, right], axis=1) * 7000   # loud, wide, transient
+
+    v = cinema()
+    n = v.samples_per_frame
+    i, means = 0, []
+    for gen, secs in ((talk, 25), (fight, 25), (talk, 25)):
+        seg = []
+        for _ in range(int(secs * v.settings.audio.fps)):
+            v.process(gen(i, n))
+            i += 1
+            seg.append(v.effect.mood.detail)
+        means.append(float(np.mean(seg[len(seg) // 2:])))
+
+    quiet_a, action, quiet_b = means
+    assert action > 0.5, f"the fight only reached detail {action:.2f}"
+    assert quiet_a < 0.3 and quiet_b < 0.3, f"dialogue sat at {quiet_a:.2f}/{quiet_b:.2f}"
+    assert action > max(quiet_a, quiet_b) * 3
 
 
 def test_brightness_never_reaches_zero():
