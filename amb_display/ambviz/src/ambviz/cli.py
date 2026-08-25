@@ -43,7 +43,8 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
     aud.add_argument("--source", choices=["mic", "synth", "wav"],
                      help="'synth' generates a test signal; needs no microphone")
     aud.add_argument("--wav", metavar="PATH", help="16-bit PCM .wav to loop")
-    aud.add_argument("--input-device", type=int, metavar="N", help="PortAudio input index")
+    aud.add_argument("--input-device", metavar="NAME|N",
+                     help="input device index, or part of its name (e.g. 'pulse')")
     aud.add_argument("--rate", type=int, help="sample rate in Hz")
     aud.add_argument("--fps", type=int, help="target frames per second")
 
@@ -109,11 +110,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     visualizer = Visualizer(settings)
     try:
         source = make_source(settings)
-    except ImportError:
-        print("error: --source mic needs pyaudio.\n"
-              "       Install the extra:  pip install 'ambviz[mic]'\n"
-              "       (Debian/Ubuntu: apt install portaudio19-dev first.)\n"
-              "       Or use --source synth to run with no microphone.", file=sys.stderr)
+    except ImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     except (OSError, ValueError) as exc:
         print(f"error: cannot open audio source: {exc}", file=sys.stderr)
@@ -233,13 +231,14 @@ def cmd_devices(args: argparse.Namespace) -> int:
 
     try:
         devices = list_input_devices()
-    except ImportError:
-        print("error: pyaudio is not installed. pip install 'ambviz[mic]'", file=sys.stderr)
+    except ImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     if not devices:
         print("no audio input devices found")
-    for index, name, channels in devices:
-        print(f"  [{index:2d}] {name}  ({channels} ch)")
+    for index, name, channels, is_default in devices:
+        mark = "  <- default" if is_default else ""
+        print(f"  [{index:2d}] {name}  ({channels} ch){mark}")
     return 0
 
 

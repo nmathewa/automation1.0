@@ -55,7 +55,7 @@ def test_missing_file():
         ({"output": {"device": "serial"}}, "output.device"),
         ({"audio": {"source": "wav"}}, "wav_path is empty"),
         ({"smoothing": {"red": (0.0, 0.5)}}, "strictly between"),
-        ({"audio": {"input_device": "usb"}}, "integer index"),
+        ({"audio": {"input_device": 1.5}}, "device index, a name"),
     ],
 )
 def test_validation_rejects(overrides, message):
@@ -76,6 +76,12 @@ def test_warnings_do_not_raise():
 
 def test_empty_string_means_unset():
     assert Settings.load(overrides={"audio": {"input_device": ""}}).audio.input_device is None
+
+
+def test_input_device_accepts_an_index_or_a_name():
+    """Indices get reordered between boots; names do not."""
+    assert Settings.load(overrides={"audio": {"input_device": 13}}).audio.input_device == 13
+    assert Settings.load(overrides={"audio": {"input_device": "pulse"}}).audio.input_device == "pulse"
 
 
 def test_toml_roundtrip(tmp_path):

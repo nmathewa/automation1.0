@@ -1,6 +1,11 @@
 """Audio sources.
 
-``mic`` needs PyAudio and a working input device (install the ``mic`` extra).
+``mic`` captures from a real input device through PortAudio. Two bindings are
+supported: :mod:`sounddevice` is preferred because it binds the PortAudio
+*runtime* and therefore installs from a wheel, while :mod:`pyaudio` has to
+compile against ``portaudio.h`` and fails on any machine without the dev
+package. Either works; whichever is importable is used.
+
 ``synth`` and ``wav`` need neither, which is what makes the whole pipeline
 testable with no hardware and no microphone attached.
 """
@@ -36,12 +41,46 @@ class Source:
         self.close()
 
 
-class MicSource(Source):
-    """Live PortAudio capture."""
+class _SoundDeviceMic(Source):
+    """Capture via :mod:`sounddevice`."""
 
     def __init__(self, settings: Settings):
         super().__init__(settings)
-        import pyaudio  # imported lazily so synth/wav work without PortAudio
+        import sounddevice as sd
+
+        self._sd = sd
+        self._stream = sd.InputStream(
+            samplerate=settings.audio.rate,
+            channels=1,
+            dtype="int16",
+            blocksize=self.frame_size,
+            device=resolve_input_device(settings.audio.input_device),
+        )
+        self._stream.start()
+        self.overflows = 0
+
+    def frames(self) -> Iterator[np.ndarray]:
+        while True:
+            block, overflowed = self._stream.read(self.frame_size)
+            if overflowed:
+                self.overflows += 1
+            # Drop any backlog so the visualization tracks live audio instead
+            # of falling further behind it.
+            if (available := self._stream.read_available) > self.frame_size:
+                self._stream.read(available)
+            yield block.reshape(-1).astype(np.float32)
+
+    def close(self) -> None:
+        self._stream.stop()
+        self._stream.close()
+
+
+class _PyAudioMic(Source):
+    """Capture via :mod:`pyaudio`."""
+
+    def __init__(self, settings: Settings):
+        super().__init__(settings)
+        import pyaudio
 
         self._pa = pyaudio.PyAudio()
         self._stream = self._pa.open(
@@ -49,7 +88,7 @@ class MicSource(Source):
             channels=1,
             rate=settings.audio.rate,
             input=True,
-            input_device_index=settings.audio.input_device,
+            input_device_index=resolve_input_device(settings.audio.input_device),
             frames_per_buffer=self.frame_size,
         )
         self.overflows = 0
@@ -58,8 +97,6 @@ class MicSource(Source):
         while True:
             try:
                 raw = self._stream.read(self.frame_size, exception_on_overflow=False)
-                # Drop any backlog so the visualization tracks live audio
-                # instead of falling further behind.
                 if (available := self._stream.get_read_available()) > self.frame_size:
                     self._stream.read(available, exception_on_overflow=False)
                 yield np.frombuffer(raw, dtype=np.int16).astype(np.float32)
@@ -70,6 +107,37 @@ class MicSource(Source):
         self._stream.stop_stream()
         self._stream.close()
         self._pa.terminate()
+
+
+# sounddevice first: it needs no system dev package, so it works where pyaudio
+# cannot even be installed.
+MIC_BACKENDS: tuple[tuple[str, type[Source]], ...] = (
+    ("sounddevice", _SoundDeviceMic),
+    ("pyaudio", _PyAudioMic),
+)
+
+
+def available_mic_backend() -> tuple[str, type[Source]] | None:
+    """The first importable capture binding, or ``None`` if there is none."""
+    for name, cls in MIC_BACKENDS:
+        try:
+            __import__(name)
+            return name, cls
+        except ImportError:
+            continue
+    return None
+
+
+def MicSource(settings: Settings) -> Source:  # noqa: N802 - used as a class would be
+    """Open the microphone with whichever PortAudio binding is installed."""
+    backend = available_mic_backend()
+    if backend is None:
+        raise ImportError(
+            "no audio capture backend. Install one with:\n"
+            "    pip install 'ambviz[mic]'        (sounddevice, needs no system packages)\n"
+            "Or use --source synth to run without a microphone."
+        )
+    return backend[1](settings)
 
 
 class SynthSource(Source):
@@ -165,17 +233,50 @@ def make_source(settings: Settings) -> Source:
         ) from None
 
 
-def list_input_devices() -> list[tuple[int, str, int]]:
-    """``(index, name, max_input_channels)`` for every PortAudio input device."""
+def resolve_input_device(device: int | str | None) -> int | None:
+    """Turn a device name into an index, leaving indices and ``None`` alone."""
+    if device is None or isinstance(device, int):
+        return device
+    wanted = device.strip().lower()
+    if not wanted:
+        return None
+    matches = [(i, name) for i, name, _, _ in list_input_devices() if wanted in name.lower()]
+    if not matches:
+        available = ", ".join(name for _, name, _, _ in list_input_devices()) or "none"
+        raise ValueError(f"no input device matching {device!r}; available: {available}")
+    return matches[0][0]
+
+
+def list_input_devices() -> list[tuple[int, str, int, bool]]:
+    """``(index, name, channels, is_default)`` for every PortAudio input.
+
+    Indices are backend-specific, so they mean what the active backend says they
+    mean -- which is the one :func:`MicSource` will use.
+    """
+    backend = available_mic_backend()
+    if backend is None:
+        raise ImportError("no audio capture backend installed")
+    name = backend[0]
+
+    if name == "sounddevice":
+        import sounddevice as sd
+
+        default = sd.default.device[0]
+        return [
+            (i, str(d["name"]), int(d["max_input_channels"]), i == default)
+            for i, d in enumerate(sd.query_devices())
+            if int(d["max_input_channels"]) > 0
+        ]
+
     import pyaudio
 
     pa = pyaudio.PyAudio()
     try:
-        devices = []
-        for i in range(pa.get_device_count()):
-            info = pa.get_device_info_by_index(i)
-            if int(info["maxInputChannels"]) > 0:
-                devices.append((i, str(info["name"]), int(info["maxInputChannels"])))
-        return devices
+        default = pa.get_default_input_device_info().get("index", -1)
+        return [
+            (i, str(info["name"]), int(info["maxInputChannels"]), i == default)
+            for i in range(pa.get_device_count())
+            if int((info := pa.get_device_info_by_index(i))["maxInputChannels"]) > 0
+        ]
     finally:
         pa.terminate()

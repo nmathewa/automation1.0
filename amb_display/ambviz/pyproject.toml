@@ -12,7 +12,10 @@ license = { text = "MIT" }
 dependencies = ["numpy>=1.24", "scipy>=1.11"]
 
 [project.optional-dependencies]
-mic = ["pyaudio>=0.2.13"]
+# sounddevice binds the PortAudio runtime, so it installs from a wheel.
+# pyaudio compiles against portaudio.h and needs a system dev package.
+mic = ["sounddevice>=0.4.6"]
+mic-pyaudio = ["pyaudio>=0.2.13"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

@@ -87,9 +87,12 @@ class Audio:
     """``mic`` (live input), ``synth`` (generated test signal, no hardware needed),
     or ``wav`` (loop a .wav file via the stdlib ``wave`` module)."""
 
-    input_device: int | None = None
-    """PortAudio input device index. ``None`` uses the system default.
-    Run ``python run.py --list-devices`` to see the options."""
+    input_device: int | str | None = None
+    """PortAudio input device: an index, or part of a device name.
+
+    Names are matched case-insensitively, which survives the reordering that
+    indices are prone to -- ``"pulse"`` keeps working, ``13`` may not.
+    ``None`` uses the system default. See ``ambviz devices``."""
 
     wav_path: str = ""
     """Source file when ``source = "wav"``."""
@@ -244,8 +247,8 @@ class Settings:
         # TOML has no null: an empty string means "unset" for optional values.
         if self.audio.input_device == "":
             self.audio.input_device = None
-        if self.audio.input_device is not None and not isinstance(self.audio.input_device, int):
-            problems.append("audio.input_device must be an integer index or empty")
+        if self.audio.input_device is not None and not isinstance(self.audio.input_device, (int, str)):
+            problems.append("audio.input_device must be a device index, a name, or empty")
 
         if self.output.pixels < 1:
             problems.append("output.pixels must be >= 1")
