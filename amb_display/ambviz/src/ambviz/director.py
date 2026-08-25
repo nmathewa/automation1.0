@@ -72,9 +72,15 @@ def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dic
                      + 0.25 * f.onset_rate,
         # The wash, when it is in the shortlist.
         "cinema": 0.55 * calm,
-        # Ambient swells: the other calm option, and unlike cinema it wants a
-        # scene with no strong pulse rather than merely a quiet one.
-        "pacifica": 0.50 * calm + 0.30 * (1.0 - f.onset_rate) + 0.20 * sustained,
+        # Ambient swells, and the only calm candidate in the default shortlist.
+        #
+        # Deliberately not scored on onset_rate. That feature is passed through
+        # an AdaptiveRange, which stretches a near-constant input to fill 0-1 --
+        # measured at 0.92 on a phase-continuous held chord whose raw rate was
+        # 0.51. A (1 - onset_rate) term is therefore worth about 0.02 whatever
+        # the material, and spectrum's energy term wins every time: pacifica
+        # never once took the strip in 43 s of real audio.
+        "pacifica": 0.65 * calm + 0.35 * (1.0 - f.energy),
         # Sparse hits: the only candidate that goes dark between onsets, so it
         # needs a real rhythm rather than just energy.
         "puddles": 0.60 * f.onset_rate + 0.25 * percussive + 0.15 * f.energy,

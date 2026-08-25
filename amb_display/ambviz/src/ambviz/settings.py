@@ -254,12 +254,29 @@ class Mood:
     The model is the better judge of "is this speech", but it works on ~1 s
     windows, so it is blended rather than trusted outright. 0 ignores it."""
 
-    animations: tuple[str, ...] = ("bars", "energy", "scroll", "spectrum", "waterfall")
+    animations: tuple[str, ...] = ("bars", "energy", "scroll", "spectrum", "pacifica")
     """Which animations "auto" may choose between, in no particular order.
 
     A setting rather than a fixed list so the shortlist can change without a
     code edit. Names must exist in the effect registry; unknown ones are
-    rejected at load rather than silently ignored."""
+    rejected at load rather than silently ignored.
+
+    ``waterfall`` was dropped from the default. Over 43 s of real audio it had
+    the joint-highest mean score (0.519, so it won often) *and* a p95
+    frame-to-frame jitter of 0.323 -- more than twice ``switch_margin``, so
+    hysteresis could not filter it: single noisy frames won switches that dwell
+    then held for eight seconds, giving the scroll-waterfall-scroll-waterfall
+    oscillation. It was also the dimmest effect in the library, 4.9/255 peak.
+
+    ``pacifica`` replaces it at a near-identical mean (0.515) and roughly half
+    the jitter (0.164), and is the only calm candidate in the shortlist --
+    without it a quiet scene falls to a spectral display, since ``cinema`` is
+    not in the default list either. On the same clip that halves the switch
+    count from 5 to 4 and pacifica takes 39% of the time, close to the 44%
+    waterfall had.
+
+    0.164 is still marginally over ``switch_margin``. Smoothing the scores
+    before the argmax is the real fix and is not done yet."""
 
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.

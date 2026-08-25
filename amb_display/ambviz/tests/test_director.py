@@ -20,9 +20,13 @@ def auto(**mood):
 
 # ── scoring, without any audio ───────────────────────────────────────────────
 def test_a_quiet_centred_scene_picks_the_calmest_option():
+    """Was ``spectrum`` until ``pacifica`` joined the shortlist -- spectrum was
+    only ever the calmest option available, not a calm one. A quiet centred
+    scene is exactly what the ambient candidate exists for."""
     quiet = Features(mel=np.zeros(24), volume=0.1, dialogue=0.95, energy=0.1)
     scores = score_candidates(quiet, Settings.load().mood.animations)
-    assert max(scores, key=lambda k: scores[k]) == "spectrum"
+    assert max(scores, key=lambda k: scores[k]) == "pacifica"
+    assert scores["pacifica"] > scores["spectrum"]
 
 
 def test_beats_prefer_a_pulse_driven_animation():
