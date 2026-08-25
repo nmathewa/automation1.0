@@ -30,13 +30,13 @@ void setup()
   FastLED.addLeds<WS2812, PIN, GRB>(leds, NUM_LEDS);
   
   // initial RGB flash
-  LEDS.showColor(CRGB(255, 0, 0));
+  FastLED.showColor(CRGB(255, 0, 0));
   delay(500);
-  LEDS.showColor(CRGB(0, 255, 0));
+  FastLED.showColor(CRGB(0, 255, 0));
   delay(500);
-  LEDS.showColor(CRGB(0, 0, 255));
+  FastLED.showColor(CRGB(0, 0, 255));
   delay(500);
-  LEDS.showColor(CRGB(0, 0, 0));
+  FastLED.showColor(CRGB(0, 0, 0));
   
   Serial.begin(serialRate);
   Serial.print("Ada\n"); // Send "Magic Word" string to host
