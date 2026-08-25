@@ -1,0 +1,47 @@
+# Publishes amb_display/dashboard to GitHub Pages.
+#
+# The dashboard is a single static file, so there is nothing to build. It is a
+# pure client: with no API to talk to it renders empty, which is why the hosted
+# copy is worth opening with ?demo=1.
+#
+# Kept separate from main.yml because it needs pages/id-token permissions that
+# the build-and-test workflow has no business holding.
+name: Deploy dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'amb_display/dashboard/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      # Only the dashboard directory is published; nothing else is exposed.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: amb_display/dashboard
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

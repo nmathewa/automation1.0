@@ -139,9 +139,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             sampler.start()
             providers["strip"] = strip.snapshot
         api = ApiServer(providers, host=args.api_host, port=args.api_port,
-                        stream_fps=args.stream_fps, settings=settings, commands=commands)
+                        stream_fps=args.stream_fps, settings=settings,
+                        commands=commands, static_dir=args.static)
         api.start()
         print(f"api {api.role} -> {api.url}/api/state", file=sys.stderr)
+        if api.static_dir:
+            print(f"dashboard -> {api.url}/", file=sys.stderr)
 
     frames = 0
     started = last_report = time.monotonic()
@@ -198,10 +201,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
         port=args.api_port,
         stream_fps=args.stream_fps,
         settings=settings,
+        static_dir=args.static,
     )
     print(f"virtual strip : {strip.pixels} px ({'fixed' if args.fixed else 'auto-grow'})")
     print(f"listening on  : udp://{args.udp_host}:{settings.output.port}")
     print(f"api           : {api.url}/api/state")
+    if api.static_dir:
+        print(f"dashboard     : {api.url}/  (from {api.static_dir})")
     print("Ctrl-C to stop")
     try:
         api.serve_forever()
@@ -254,6 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--virtual", action="store_true",
                      help="implies --api and --sim, and receives the strip data here too "
                           "-- the whole no-hardware setup in one process")
+    run.add_argument("--static", metavar="DIR", help="serve a dashboard directory from the API, so the page and the API share an origin; --api-host 0.0.0.0 to reach it from another device")
     run.add_argument("--api-host", default="127.0.0.1", help="API bind address")
     run.add_argument("--api-port", type=int, default=8080, help="API port")
     run.add_argument("--stream-fps", type=float, default=30.0, help="cap on SSE pushes/second")
@@ -263,6 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = subs.add_parser("serve", help="virtual strip + telemetry API for a dashboard")
     _add_settings_flags(serve)
+    serve.add_argument("--static", metavar="DIR", help="serve a dashboard directory from the API, so the page and the API share an origin; --api-host 0.0.0.0 to reach it from another device")
     serve.add_argument("--api-host", default="127.0.0.1", help="API bind address")
     serve.add_argument("--api-port", type=int, default=8080, help="API port")
     serve.add_argument("--udp-host", default="0.0.0.0", help="address to receive strip data on")

@@ -20,6 +20,11 @@ Endpoints
 ``POST /api/settings``      partial patch, e.g. ``{"effect": {"brightness": 0.4}}``
 ``POST /api/effect``        ``{"name": "energy"}``, sugar over the above
 
+With ``static_dir`` set, anything not matching ``/api/*`` is served from that
+directory. The package still ships no HTML -- it serves files the operator points
+at -- but hosting a dashboard from the API means the page and the API share an
+origin, which sidesteps browser mixed-content rules entirely.
+
 The POST routes exist only when the process was given a command queue; writing
 to a read-only process answers 503.
 
@@ -29,9 +34,11 @@ Standard library only.
 from __future__ import annotations
 
 import json
+import mimetypes
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable
 
 from ambviz import __version__
@@ -59,6 +66,9 @@ class ApiServer:
     commands:
         A :class:`~ambviz.control.CommandQueue`. Its presence is what enables
         the POST routes; without one the API is read-only.
+    static_dir:
+        A directory to serve for non-API routes -- typically a dashboard. Same
+        origin as the API, so no mixed-content rules apply.
     """
 
     def __init__(
@@ -69,6 +79,7 @@ class ApiServer:
         stream_fps: float = 30.0,
         settings: Settings | None = None,
         commands: CommandQueue | None = None,
+        static_dir: str | Path | None = None,
     ):
         if not providers:
             raise ValueError("at least one telemetry provider is required")
@@ -76,6 +87,13 @@ class ApiServer:
         self.stream_fps = stream_fps
         self.settings = settings
         self.commands = commands
+
+        self.static_dir: Path | None = None
+        if static_dir is not None:
+            root = Path(static_dir).expanduser().resolve()
+            if not root.is_dir():
+                raise ValueError(f"static directory not found: {root}")
+            self.static_dir = root
 
         self._server = ThreadingHTTPServer((host, port), _make_handler(self))
         self.address = self._server.server_address
@@ -135,6 +153,11 @@ def _make_handler(api: ApiServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            # Chrome gates requests from a public HTTPS page to a loopback
+            # address behind this handshake; without the answer it drops them.
+            # Only sent when asked for, so it never appears on ordinary requests.
+            if self.headers.get("Access-Control-Request-Private-Network") == "true":
+                self.send_header("Access-Control-Allow-Private-Network", "true")
 
         def do_OPTIONS(self) -> None:  # noqa: N802
             self.send_response(204)
@@ -174,6 +197,9 @@ def _make_handler(api: ApiServer) -> type[BaseHTTPRequestHandler]:
                                filename="ambviz.toml")
             elif route == "/api/stream":
                 self._stream()
+            elif api.static_dir is not None and not route.startswith("/api/"):
+                # /api/* always wins, so a file on disk can never shadow the API.
+                self._static(route)
             elif route == "/":
                 self._json({
                     "service": "ambviz",
@@ -186,6 +212,27 @@ def _make_handler(api: ApiServer) -> type[BaseHTTPRequestHandler]:
                 })
             else:
                 self._json({"error": "not found", "path": route}, 404)
+
+        def _static(self, route: str) -> None:
+            """Serve a file from the static root, and nothing outside it."""
+            root = api.static_dir
+            assert root is not None
+            relative = route.lstrip("/") or "index.html"
+            candidate = (root / relative).resolve()
+
+            # This is a hand-written handler, so containment is checked here
+            # rather than inherited from SimpleHTTPRequestHandler.
+            if candidate != root and root not in candidate.parents:
+                self._json({"error": "forbidden", "path": route}, 403)
+                return
+            if candidate.is_dir():
+                candidate = candidate / "index.html"
+            if not candidate.is_file():
+                self._json({"error": "not found", "path": route}, 404)
+                return
+
+            content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+            self._send(candidate.read_bytes(), 200, content_type)
 
         # ── writes ───────────────────────────────────────────────────────────
         def do_POST(self) -> None:  # noqa: N802
