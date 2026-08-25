@@ -9,6 +9,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from ambviz.dsp import EPS, ExpFilter, MelBank
 from ambviz.effects import EFFECTS
+from ambviz.features import Features, OnsetDetector
 from ambviz.settings import Settings
 
 # Which settings force which object to be rebuilt when changed at runtime.
@@ -58,6 +59,17 @@ class Visualizer:
         self.frames = 0
         self._fps = ExpFilter(float(settings.audio.fps), alpha_decay=0.2, alpha_rise=0.2)
         self._last_frame: float | None = None
+
+        self.onsets = OnsetDetector(
+            sensitivity=settings.dsp.onset_sensitivity,
+            refractory=settings.dsp.onset_refractory,
+        )
+        self.features = Features(mel=np.zeros(bins), volume=0.0, silent=True)
+        # Static per process, so computed once: it lets a client build its
+        # effect list from the state stream instead of a second request.
+        self.available_effects = sorted(EFFECTS)
+        self.beats = 0
+        self._started = time.monotonic()
 
     # ── runtime reconfiguration ──────────────────────────────────────────────
     def set_effect(self, name: str) -> None:
@@ -115,6 +127,7 @@ class Visualizer:
             "volume": round(self.volume, 6),
             "silent": self.silent,
             "effect": s.effect.name,
+            "effects": self.available_effects,
             "brightness": s.effect.brightness,
             "mirror": self.mirror,
             "pixels": self.n_pixels,
@@ -122,6 +135,10 @@ class Visualizer:
             "bins": s.dsp.fft_bins,
             "source": s.audio.source,
             "mel": [round(float(v), 4) for v in self.mel],
+            "onset": round(float(self.features.onset), 3),
+            "beat": self.features.beat,
+            "beats": self.beats,
+            "flux": round(float(self.features.flux), 4),
             "mel_gain": round(float(np.max(mel_gain)), 6),
             "center_frequencies": [round(float(f), 1) for f in self.mel_bank.center_frequencies],
             "min_frequency": s.dsp.min_frequency,
@@ -142,10 +159,12 @@ class Visualizer:
         self._roll[-1, :] = y[:self.samples_per_frame]
         data = np.concatenate(self._roll, axis=0).astype(np.float32)
 
+        elapsed = now - self._started
         self.volume = float(np.max(np.abs(data)))
         self.silent = self.volume < self.settings.audio.min_volume
         if self.silent:
             self.mel = np.zeros_like(self.mel)
+            self.features = Features(mel=self.mel, volume=self.volume, t=elapsed, silent=True)
             return np.zeros((3, self.n_pixels))
 
         n = len(data)
@@ -157,7 +176,14 @@ class Visualizer:
         mel = mel / np.maximum(self.mel_gain.value, EPS)
         self.mel = self.mel_smoothing.update(mel)
 
-        return self._to_strip(self.effect.render(self.mel))
+        onset, beat, flux = self.onsets.update(self.mel, elapsed)
+        if beat:
+            self.beats += 1
+        self.features = Features(
+            mel=self.mel, volume=self.volume, onset=onset, beat=beat,
+            flux=flux, t=elapsed, silent=False,
+        )
+        return self._to_strip(self.effect.render(self.features))
 
     def _to_strip(self, half: np.ndarray) -> np.ndarray:
         if self.mirror:

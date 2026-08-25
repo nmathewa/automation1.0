@@ -79,6 +79,23 @@
   button:hover { color: var(--ink); }
   button[aria-pressed="true"] { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
   .seg { display: inline-flex; gap: 4px; }
+  /* Nine effects will not fit one row of a narrow grid cell, so this control
+     takes the full width and lets the buttons flow. */
+  /* A select rather than a button row: the effect library is meant to grow,
+     and a row of nine-plus buttons does not survive a narrow column. */
+  select {
+    font: inherit; font-size: 13px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 8px; width: 100%;
+  }
+  select:focus { outline: none; border-color: var(--accent); }
+
+  /* beat indicator */
+  .beat { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); }
+  .beat i {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--axis);
+    transition: background .06s, box-shadow .06s; font-style: normal;
+  }
 
   .api { gap: 6px; padding-right: 9px; }
   .api label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
@@ -257,11 +274,7 @@
     <div class="controls">
       <div class="ctl">
         <span>Effect</span>
-        <div class="seg" id="ctl-effect">
-          <button type="button" data-effect="spectrum">Spectrum</button>
-          <button type="button" data-effect="energy">Energy</button>
-          <button type="button" data-effect="scroll">Scroll</button>
-        </div>
+        <select id="ctl-effect" aria-label="Effect"></select>
       </div>
       <div class="ctl">
         <span>Brightness</span>
@@ -296,6 +309,7 @@
     <div class="card-head">
       <h2>Mel filterbank</h2>
       <div class="spacer"></div>
+      <span class="beat" id="beat"><i></i><span id="beat-text">—</span></span>
       <span class="key" id="spectrum-range">—</span>
     </div>
     <div class="plot-wrap" id="spectrum-wrap">
@@ -680,6 +694,16 @@
     const lit = Math.round((stats.coverage / 100) * count);
     $("k-cov-sub").textContent = `${lit} of ${count} pixels`;
 
+    if (engine && engine.onset !== undefined) {
+      const o = engine.onset;
+      const dot = $("beat").querySelector("i");
+      dot.style.background = o > 0.05 ? "var(--good)" : "var(--axis)";
+      dot.style.boxShadow = o > 0.05
+        ? `0 0 0 ${Math.round(2 + o * 5)}px color-mix(in srgb, var(--good) 22%, transparent)`
+        : "none";
+      $("beat-text").textContent = `${engine.beats ?? 0} onsets`;
+    }
+
     spark("spark-pps", history.map((h) => h.pps));
     spark("spark-kbs", history.map((h) => h.bps / 1024));
     spark("spark-ups", history.map((h) => h.pps));
@@ -805,9 +829,7 @@
    *  The smoothing alphas are not in the stream and wait for that fetch. */
   function syncFromEngine() {
     if (!engine) return;
-    for (const b of $("ctl-effect").querySelectorAll("button")) {
-      b.setAttribute("aria-pressed", String(b.dataset.effect === engine.effect));
-    }
+    if (editing !== "effect") $("ctl-effect").value = engine.effect;
     if (editing !== "brightness") {
       $("ctl-brightness").value = engine.brightness;
       $("out-brightness").textContent = Number(engine.brightness).toFixed(2);
@@ -826,9 +848,7 @@
   function syncControls(cfg, force = false) {
     if (!cfg) return false;
     settingsCache = cfg;
-    for (const b of $("ctl-effect").querySelectorAll("button")) {
-      b.setAttribute("aria-pressed", String(b.dataset.effect === cfg.effect.name));
-    }
+    if (force || editing !== "effect") $("ctl-effect").value = cfg.effect.name;
     if (force || editing !== "brightness") {
       $("ctl-brightness").value = cfg.effect.brightness;
       $("out-brightness").textContent = Number(cfg.effect.brightness).toFixed(2);
@@ -847,9 +867,9 @@
     return true;
   }
 
-  $("ctl-effect").addEventListener("click", (e) => {
-    const name = e.target.dataset && e.target.dataset.effect;
-    if (name) send({ effect: { name } });
+  $("ctl-effect").addEventListener("change", (e) => {
+    editing = null;
+    send({ effect: { name: e.target.value } });
   });
   bindLive($("ctl-brightness"), "brightness",
     (v) => ($("out-brightness").textContent = Number(v).toFixed(2)),
@@ -930,6 +950,7 @@
       history = msg.strip.history || [];
     }
     engine = msg.engine || null;
+    if (engine && engine.effects) renderEffectButtons(engine.effects);
     // The payload's own keys name the providers, so panel visibility never has
     // to wait on a second request.
     showPanels(Object.keys(msg));
@@ -966,8 +987,18 @@
   }
 
   /** Health carries the contract version and whether writes are accepted. */
+  const TITLE = (n) => n.charAt(0).toUpperCase() + n.slice(1);
+
+  function renderEffectButtons(names) {
+    const sel = $("ctl-effect");
+    if (!names || !names.length || sel.dataset.built === names.join(",")) return;
+    sel.dataset.built = names.join(",");
+    sel.innerHTML = names.map((n) => `<option value="${n}">${TITLE(n)}</option>`).join("");
+  }
+
   function applyHealth(h) {
     health = h;
+    renderEffectButtons(h.effects);
     $("dl-toml").href = API + "/api/settings.toml";
     showPanels(h.providers || []);
   }
@@ -1094,6 +1125,8 @@
         effect: "spectrum", brightness: 1, mirror: true, pixels: count,
         width: half, bins, source: "demo", mel,
         mel_gain: 0.42, center_frequencies: centres,
+        onset: Math.max(0, 1 - ((t * 2) % 1) * 4), beat: ((t * 2) % 1) < 0.03,
+        beats: Math.floor(t * 2), flux: 0.3,
         min_frequency: 200, max_frequency: 12000,
       },
     };

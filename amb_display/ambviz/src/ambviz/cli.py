@@ -22,7 +22,22 @@ import time
 from ambviz import __version__
 from ambviz.settings import Settings
 
-EFFECT_NAMES = ("energy", "scroll", "spectrum")
+def _effect_names() -> tuple[str, ...] | None:
+    """Effect names for --help, or None where numpy is absent.
+
+    argparse builds its choices at import time, but this module must stay
+    importable without numpy so `serve` runs on a bare interpreter. When the
+    import is unavailable the flag simply accepts anything and settings
+    validation produces the error, listing the valid names.
+    """
+    try:
+        from ambviz.effects import EFFECTS
+    except ImportError:
+        return None
+    return tuple(sorted(EFFECTS))
+
+
+EFFECT_NAMES = _effect_names()
 
 
 # ── argument plumbing ────────────────────────────────────────────────────────
@@ -51,7 +66,8 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
     aud.add_argument("--fps", type=int, help="target frames per second")
 
     dsp = p.add_argument_group("dsp / effect")
-    dsp.add_argument("--effect", choices=EFFECT_NAMES)
+    dsp.add_argument("--effect", choices=EFFECT_NAMES, metavar="NAME",
+                     help="effect to run" + (f" ({', '.join(EFFECT_NAMES)})" if EFFECT_NAMES else ""))
     dsp.add_argument("--bins", type=int, help="number of Mel bands")
     dsp.add_argument("--min-freq", type=float, help="filterbank low edge, Hz")
     dsp.add_argument("--max-freq", type=float, help="filterbank high edge, Hz")

@@ -98,6 +98,7 @@ class ApiServer:
         self._server = ThreadingHTTPServer((host, port), _make_handler(self))
         self.address = self._server.server_address
         self._thread: threading.Thread | None = None
+        self._serving = False
 
     # ── introspection ────────────────────────────────────────────────────────
     @property
@@ -120,9 +121,21 @@ class ApiServer:
     def state(self) -> dict[str, Any]:
         return {name: provider() for name, provider in self.providers.items()}
 
+    def effects(self) -> list[str]:
+        """Effect names this build offers, or ``[]`` on a numpy-free process."""
+        try:
+            from ambviz.effects import EFFECTS
+        except ImportError:
+            return []          # `serve` runs without numpy; it renders nothing
+        return sorted(EFFECTS)
+
     # ── lifecycle ────────────────────────────────────────────────────────────
     def serve_forever(self) -> None:
-        self._server.serve_forever()
+        self._serving = True
+        try:
+            self._server.serve_forever()
+        finally:
+            self._serving = False
 
     def start(self) -> "ApiServer":
         self._thread = threading.Thread(target=self.serve_forever, daemon=True, name="ambviz-api")
@@ -130,7 +143,10 @@ class ApiServer:
         return self
 
     def stop(self) -> None:
-        self._server.shutdown()
+        # shutdown() blocks until the serve_forever loop acknowledges it, so
+        # calling it on a server that was never started hangs forever.
+        if self._serving:
+            self._server.shutdown()
         self._server.server_close()
 
     def __enter__(self) -> "ApiServer":
@@ -177,6 +193,9 @@ def _make_handler(api: ApiServer) -> type[BaseHTTPRequestHandler]:
                     "providers": sorted(api.providers),
                     "controllable": api.commands is not None,
                     "stream_fps": api.stream_fps,
+                    # So a client can offer every effect this build has rather
+                    # than a list hardcoded when it was written.
+                    "effects": api.effects(),
                 })
             elif route == "/api/state":
                 self._json(api.state())
