@@ -49,6 +49,7 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "mood.dialogue_damping",
     "mood.detail",
     "mood.audio_weight",
+    "mood.scene_weight",
     # how hard the smoothing bites
     "smoothing.red",
     "smoothing.green",

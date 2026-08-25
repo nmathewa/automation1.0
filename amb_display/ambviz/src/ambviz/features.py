@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ambviz.dsp import ExpFilter
+from ambviz.scene import Scene
 
 
 @dataclass
@@ -76,6 +77,9 @@ class Features:
 
     A voice is narrow, an explosion is wide. Together with level and onset rate
     this is what separates a dialogue scene from a fight."""
+
+    scene: Scene = field(default_factory=Scene)
+    """What a classifier thinks the audio *is*, when one is running."""
 
     energy: float = 0.0
     """How much is going on, 0-1, adaptively rescaled across the film.

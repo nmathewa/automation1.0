@@ -222,6 +222,17 @@ class Mood:
     range_seconds: float = 45.0
     """Window the adaptive range learns over. Long enough to span a scene."""
 
+    scene_weight: float = 0.7
+    """How far YAMNet's opinion overrides the hand-rolled features, 0-1.
+
+    The DSP features describe how audio behaves; the model describes what it is.
+    The model is the better judge of "is this speech", but it works on ~1 s
+    windows, so it is blended rather than trusted outright. 0 ignores it."""
+
+    scene_interval: float = 0.5
+    """Seconds between classifications. The model costs under a millisecond, so
+    this is about how fast a scene label should move, not about CPU."""
+
 
 @dataclass
 class Effect:
@@ -373,6 +384,10 @@ class Settings:
         for name in ("deadband", "floor", "dialogue_damping", "detail", "audio_weight"):
             if not 0.0 <= getattr(m, name) <= 1.0:
                 problems.append(f"mood.{name} must be between 0.0 and 1.0")
+        if not 0.0 <= m.scene_weight <= 1.0:
+            problems.append("mood.scene_weight must be between 0.0 and 1.0")
+        if m.scene_interval <= 0:
+            problems.append("mood.scene_interval must be positive")
         if m.range_seconds < 1.0:
             problems.append("mood.range_seconds must be at least 1 second")
 

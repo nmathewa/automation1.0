@@ -10,6 +10,7 @@ from scipy.ndimage import gaussian_filter1d
 from ambviz.dsp import EPS, AdaptiveRange, ExpFilter, MelBank
 from ambviz.effects import EFFECTS
 from ambviz.features import Features, OnsetDetector
+from ambviz.scene import Scene, try_create
 from ambviz.settings import Settings
 
 # Which settings force which object to be rebuilt when changed at runtime.
@@ -74,6 +75,12 @@ class Visualizer:
         self.spread_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
         self.onset_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
         self.onset_rate = ExpFilter(0.0, alpha_decay=0.02, alpha_rise=0.15)
+        # Optional and best-effort: returns None if the runtime, the model or
+        # the network is missing, and everything downstream copes.
+        self.classifier = (
+            try_create(settings.audio.rate, interval=settings.mood.scene_interval)
+            if settings.mood.scene_weight > 0.0 else None
+        )
         # One frame over the response time: a level envelope that moves over a
         # scene rather than a beat.
         alpha = float(np.clip(1.0 / max(settings.mood.response_seconds * fps, 1.0), 1e-4, 0.5))
@@ -164,6 +171,7 @@ class Visualizer:
             "slow": round(float(self.features.slow), 4),
             "spread": round(float(self.features.spread), 1),
             "energy": round(float(self.features.energy), 3),
+            "scene": self.features.scene.to_dict(),
             "mood": self._mood_snapshot(),
             "mel": [round(float(v), 4) for v in self.mel],
             "onset": round(float(self.features.onset), 3),
@@ -202,6 +210,8 @@ class Visualizer:
         self._roll[-1, :] = y[:self.samples_per_frame]
         self._roll_side[:-1] = self._roll_side[1:]
         self._roll_side[-1, :] = y_side[:self.samples_per_frame]
+        if self.classifier is not None:
+            self.classifier.push(y[:self.samples_per_frame], self.settings.audio.rate)
         data = np.concatenate(self._roll, axis=0).astype(np.float32)
 
         # Audio time, not wall-clock. Anything downstream that integrates over
@@ -256,6 +266,8 @@ class Visualizer:
         narrow = 1.0 - self.spread_range.update(spread)
         dialogue = float(np.clip(centred * narrow, 0.0, 1.0))
 
+        scene = self.classifier.scene if self.classifier is not None else Scene()
+
         # A fight scene is loud, wide and full of transients; a dialogue scene is
         # none of those. Averaging the three normalised components is enough to
         # tell them apart without recognising anything.
@@ -265,12 +277,22 @@ class Visualizer:
             + 0.3 * (1.0 - narrow)
             + 0.2 * self.onset_range.update(rate),
             0.0, 1.0))
+        if scene.available:
+            # What is playing says more about how energetic to be than the
+            # running statistics do. Percussion and electronic music want a
+            # spectrum; an orchestra wants a wash, however loud it gets.
+            w = self.settings.mood.scene_weight
+            driven = max(scene.get("percussion"), scene.get("electronic"),
+                         scene.get("loud"))
+            sustained = max(scene.get("orchestral"), scene.get("acoustic"))
+            bias = float(np.clip(0.5 + 0.5 * (driven - sustained), 0.0, 1.0))
+            energy = float(np.clip((1 - w) * energy + w * bias, 0.0, 1.0))
 
         self.features = Features(
             mel=self.mel, volume=self.volume, onset=onset, beat=beat,
             flux=flux, t=elapsed, silent=False,
             centroid=centroid, centroid_hz=centroid_hz, dialogue=dialogue, slow=slow,
-            spread=spread, energy=energy,
+            spread=spread, energy=energy, scene=scene,
         )
         return self._to_strip(self.effect.render(self.features))
 

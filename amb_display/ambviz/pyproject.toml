@@ -16,6 +16,9 @@ dependencies = ["numpy>=1.24", "scipy>=1.11"]
 # pyaudio compiles against portaudio.h and needs a system dev package.
 mic = ["sounddevice>=0.4.6"]
 mic-pyaudio = ["pyaudio>=0.2.13"]
+# Optional scene classification. ai-edge-litert is the TFLite runtime alone,
+# about 40 MB, not the 600 MB TensorFlow package.
+scene = ["ai-edge-litert>=1.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
