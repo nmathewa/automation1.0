@@ -53,6 +53,11 @@ class Visualizer:
         self.samples_per_frame = settings.audio.samples_per_frame
         self._window = np.hamming(self.samples_per_frame * settings.audio.rolling_history)
         self._roll = np.zeros((settings.audio.rolling_history, self.samples_per_frame))
+        # Side channel, kept alongside mid so centre-panned content can be
+        # cancelled at analysis time. Stays zero for mono sources.
+        self._roll_side = np.zeros_like(self._roll)
+        self.stereo = False
+        self._band_mask: np.ndarray | None = None
         self.mel: np.ndarray = np.zeros(bins)
         self.volume = 0.0
         self.silent = True
@@ -93,6 +98,8 @@ class Visualizer:
         self.settings._apply(patch)
         self.settings.validate()
 
+        if touched & {"dsp.vocal_band"}:
+            self._band_mask = None
         if touched & _REBUILDS_MEL_BANK:
             self.mel_bank.rebuild()
         if touched & _REBUILDS_MEL_FILTERS:
@@ -134,6 +141,9 @@ class Visualizer:
             "width": self.width,
             "bins": s.dsp.fft_bins,
             "source": s.audio.source,
+            "stereo": self.stereo,
+            "vocal_suppression": s.dsp.vocal_suppression,
+            "vocal_band": list(s.dsp.vocal_band),
             "mel": [round(float(v), 4) for v in self.mel],
             "onset": round(float(self.features.onset), 3),
             "beat": self.features.beat,
@@ -147,16 +157,30 @@ class Visualizer:
 
     # ── the loop ─────────────────────────────────────────────────────────────
     def process(self, samples: np.ndarray) -> np.ndarray:
-        """Consume one frame of int16-scaled audio and return strip pixels."""
+        """Consume one frame of audio and return strip pixels.
+
+        Accepts mono ``(n,)`` or stereo ``(n, 2)``. Stereo is split into mid and
+        side; only the side channel makes vocal suppression possible.
+        """
         self.frames += 1
         now = time.monotonic()
         if self._last_frame is not None and now > self._last_frame:
             self._fps.update(1.0 / (now - self._last_frame))
         self._last_frame = now
 
-        y = samples / 2.0 ** 15
+        samples = np.asarray(samples)
+        self.stereo = samples.ndim == 2 and samples.shape[1] == 2
+        if self.stereo:
+            left, right = samples[:, 0] / 2.0 ** 15, samples[:, 1] / 2.0 ** 15
+            y, y_side = (left + right) / 2.0, (left - right) / 2.0
+        else:
+            y = samples / 2.0 ** 15
+            y_side = np.zeros_like(y)
+
         self._roll[:-1] = self._roll[1:]
         self._roll[-1, :] = y[:self.samples_per_frame]
+        self._roll_side[:-1] = self._roll_side[1:]
+        self._roll_side[-1, :] = y_side[:self.samples_per_frame]
         data = np.concatenate(self._roll, axis=0).astype(np.float32)
 
         elapsed = now - self._started
@@ -168,8 +192,17 @@ class Visualizer:
             return np.zeros((3, self.n_pixels))
 
         n = len(data)
-        padded = np.pad(data * self._window, (0, 2 ** int(np.ceil(np.log2(n))) - n))
-        spectrum = np.abs(np.fft.rfft(padded)[:n // 2])
+        pad = self.mel_bank.n_fft - n
+        # The whole rfft, not a slice: the filterbank is built for exactly these
+        # bins, and truncating here is what put the two frequency axes out of
+        # step in the first place.
+        spectrum = np.abs(np.fft.rfft(np.pad(data * self._window, (0, pad))))
+
+        suppression = self.settings.dsp.vocal_suppression
+        if suppression > 0.0 and self.stereo:
+            side = np.concatenate(self._roll_side, axis=0).astype(np.float32)
+            side_spectrum = np.abs(np.fft.rfft(np.pad(side * self._window, (0, pad))))
+            spectrum = self._suppress_centre(spectrum, side_spectrum, suppression)
 
         mel = self.mel_bank.apply(spectrum) ** self.settings.dsp.mel_exponent
         self.mel_gain.update(np.max(gaussian_filter1d(mel, sigma=self.settings.dsp.gain_sigma)))
@@ -184,6 +217,25 @@ class Visualizer:
             flux=flux, t=elapsed, silent=False,
         )
         return self._to_strip(self.effect.render(self.features))
+
+    def _suppress_centre(self, mid: np.ndarray, side: np.ndarray, amount: float) -> np.ndarray:
+        """Crossfade from mid toward side inside the vocal band.
+
+        Centre-panned content cancels in ``L - R``, and vocals are centred in
+        almost every mix. Applying it across the whole spectrum would also
+        cancel the kick and bass, which are centred too -- so outside the band
+        the mid channel passes through untouched.
+        """
+        if self._band_mask is None or len(self._band_mask) != len(mid):
+            # Derive the transform size from the spectrum itself: a real FFT of
+            # nfft samples yields nfft//2 + 1 bins, so nfft = 2 * (bins - 1).
+            # Taking it from the spectrum rather than from settings keeps this
+            # correct for any window size.
+            freqs = np.fft.rfftfreq(2 * (len(mid) - 1), 1.0 / self.settings.audio.rate)
+            low, high = self.settings.dsp.vocal_band
+            self._band_mask = ((freqs >= low) & (freqs <= high)).astype(np.float32)
+        k = self._band_mask * amount
+        return mid * (1.0 - k) + side * k
 
     def _to_strip(self, half: np.ndarray) -> np.ndarray:
         if self.mirror:

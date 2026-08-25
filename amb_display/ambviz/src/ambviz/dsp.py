@@ -56,7 +56,18 @@ class MelBank:
 
     def rebuild(self) -> None:
         s = self.settings
-        self.n_fft_bands = int(s.audio.rate * s.audio.rolling_history / (2.0 * s.audio.fps))
+        # The filterbank's frequency axis must match the FFT it will be applied
+        # to. The analysis window is zero-padded to the next power of two, and
+        # rfft then returns nfft//2 + 1 bins spanning 0 to Nyquist.
+        #
+        # The original code sized the bank to rate*history/(2*fps) instead --
+        # the unpadded half-window -- and then sliced the spectrum to match. The
+        # two axes disagreed by the padding ratio, about 1.4x at the defaults,
+        # so every band sat well above the frequency it claimed: a 900 Hz tone
+        # landed in the band labelled 1256 Hz.
+        window = s.audio.samples_per_frame * s.audio.rolling_history
+        self.n_fft = 1 << (window - 1).bit_length()
+        self.n_fft_bands = self.n_fft // 2 + 1
         self.matrix, (centers_mel, self.frequencies) = melbank.compute_melmat(
             num_mel_bands=s.dsp.fft_bins,
             freq_min=s.dsp.min_frequency,

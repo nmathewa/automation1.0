@@ -164,6 +164,21 @@ class Dsp:
     onset_refractory: float = 0.12
     """Minimum seconds between beats. 0.12 caps at 500 BPM."""
 
+    vocal_suppression: float = 0.0
+    """How far to cancel centre-panned content, 0-1. Needs a stereo source.
+
+    Vocals sit in the centre of almost every mix, so ``L - R`` removes them
+    without a model. 1.0 replaces the band entirely with the side channel;
+    0.7-0.8 usually reads better, leaving a trace so the result does not sound
+    -- or look -- hollow."""
+
+    vocal_band: tuple[float, float] = (180.0, 5000.0)
+    """Where suppression applies, in Hz.
+
+    Restricting it matters: the kick and bass are centre-panned too, so
+    cancelling everywhere would remove exactly what drives the low bands.
+    Outside this range the mid channel is used untouched."""
+
 
 @dataclass
 class Effect:
@@ -305,6 +320,14 @@ class Settings:
             )
         if self.dsp.min_frequency >= self.dsp.max_frequency:
             problems.append("dsp.min_frequency must be below dsp.max_frequency")
+
+        if not 0.0 <= self.dsp.vocal_suppression <= 1.0:
+            problems.append("dsp.vocal_suppression must be between 0.0 and 1.0")
+        low, high = self.dsp.vocal_band
+        if low >= high:
+            problems.append("dsp.vocal_band must be (low, high) with low below high")
+        if low < 0:
+            problems.append("dsp.vocal_band lower edge must not be negative")
 
         if self.dsp.onset_sensitivity <= 1.0:
             problems.append("dsp.onset_sensitivity must be greater than 1.0")

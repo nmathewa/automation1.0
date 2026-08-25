@@ -102,3 +102,33 @@ def test_pipeline_publishes_onset_telemetry():
 def test_sensitivity_must_exceed_one(sensitivity):
     with pytest.raises(ValueError, match="onset_sensitivity"):
         Settings.load(overrides={"dsp": {"onset_sensitivity": sensitivity}})
+
+
+def test_filterbank_axis_matches_the_fft():
+    """Regression: the bank was sized to the unpadded half-window while the
+    spectrum came from a zero-padded FFT, so the two frequency axes disagreed by
+    the padding ratio -- about 1.4x. A 900 Hz tone landed in the band labelled
+    1256 Hz, and every frequency setting meant something other than it said."""
+    v = Visualizer(Settings.load(overrides={"dsp": {
+        "fft_bins": 40, "min_frequency": 40, "max_frequency": 8000}}))
+
+    rate, n = v.settings.audio.rate, v.samples_per_frame
+    for hz in (500.0, 900.0, 2000.0):
+        v = Visualizer(Settings.load(overrides={"dsp": {
+            "fft_bins": 40, "min_frequency": 40, "max_frequency": 8000}}))
+        phase = 0.0
+        for _ in range(40):
+            t = (np.arange(n) + phase) / rate
+            v.process(np.sin(2 * np.pi * hz * t) * 8000)
+            phase += n
+        peak = v.mel_bank.center_frequencies[int(np.argmax(v.mel))]
+        # Bands are wide, so allow the neighbouring one, but not a 1.4x error.
+        assert abs(peak - hz) / hz < 0.15, \
+            f"a {hz:.0f} Hz tone peaked in the band labelled {peak:.0f} Hz"
+
+
+def test_fft_size_is_a_power_of_two_and_bins_match():
+    v = Visualizer(Settings.load())
+    n_fft = v.mel_bank.n_fft
+    assert n_fft & (n_fft - 1) == 0, "the analysis window should pad to a power of two"
+    assert v.mel_bank.n_fft_bands == n_fft // 2 + 1

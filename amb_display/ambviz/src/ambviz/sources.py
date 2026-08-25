@@ -29,7 +29,15 @@ from ambviz.settings import Settings
 
 
 class Source:
-    """Yields frames of ``samples_per_frame`` int16-scaled samples."""
+    """Yields frames of ``samples_per_frame`` int16-scaled samples.
+
+    A frame is either 1-D mono or ``(n, 2)`` stereo. Stereo matters because
+    centre-panned content cancels in ``L - R``, which is what makes vocal
+    suppression possible without a model -- downmix early and that is gone.
+    """
+
+    #: Channels this source yields. Only loopback provides two.
+    channels = 1
 
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -235,6 +243,8 @@ class LoopbackSource(Source):
     # and the old monitor then yields silence forever.
     DEFAULT_CHECK_FRAMES = 60
 
+    channels = 2
+
     def __init__(self, settings: Settings, target: str | int | None = None):
         super().__init__(settings)
         if shutil.which("parec") is None:
@@ -258,7 +268,9 @@ class LoopbackSource(Source):
                 f"--device={self.device}",
                 "--format=s16le",
                 f"--rate={self.settings.audio.rate}",
-                "--channels=1",
+                # Two channels, not one: downmixing here would discard the side
+                # channel that vocal suppression depends on.
+                "--channels=2",
                 # Keep the server-side buffer short so the lights track the
                 # audio rather than trailing it.
                 "--latency-msec=20",
@@ -283,7 +295,7 @@ class LoopbackSource(Source):
         return True
 
     def frames(self) -> Iterator[np.ndarray]:
-        want = self.frame_size * 2          # int16
+        want = self.frame_size * 2 * self.channels      # int16, interleaved
         stream = self._proc.stdout
         assert stream is not None
         # A monitor of an idle sink emits silence far faster than real time, so
@@ -316,7 +328,7 @@ class LoopbackSource(Source):
                         f"the source may have gone away"
                     )
                 continue
-            yield np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            yield np.frombuffer(raw, dtype=np.int16).astype(np.float32).reshape(-1, 2)
 
             next_due += interval
             if (delay := next_due - time.monotonic()) > 0:

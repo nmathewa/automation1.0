@@ -39,6 +39,8 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "dsp.gain_sigma",
     "dsp.onset_sensitivity",
     "dsp.onset_refractory",
+    "dsp.vocal_suppression",
+    "dsp.vocal_band",
     # how hard the smoothing bites
     "smoothing.red",
     "smoothing.green",
