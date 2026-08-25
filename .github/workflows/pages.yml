@@ -36,7 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # enablement: true lets this workflow turn Pages on itself. Without it the
+      # action fails with "Get Pages site failed ... Not Found" until someone
+      # flips the setting by hand, which is a poor way to find out.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       # Only the dashboard directory is published; nothing else is exposed.
       - uses: actions/upload-pages-artifact@v3
