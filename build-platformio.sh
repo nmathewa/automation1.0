@@ -13,6 +13,7 @@ set -euo pipefail
 # CI red for a known reason, which teaches nobody anything.
 PROJECTS=(
   "amb_display/pro_led"
+  "amb_display/esp_tests/esp_pro_audio"
 )
 
 command -v pio >/dev/null 2>&1 || {
@@ -52,12 +53,6 @@ echo "All ${#PROJECTS[@]} project(s) built."
 
 # ---------------------------------------------------------------------------
 # Not built, and why. Each needs a real fix, not a CI change:
-#
-#   amb_display/esp_tests/esp_pro_audio
-#       src/main_static.cpp uses TProgmemRGBGradientPalettePtr, which FastLED
-#       has never had -- it is TProgmemRGBGradientPaletteRef. Fixed on the
-#       branch that moves the UDP receiver into src/; add this project here
-#       once that lands.
 #
 #   gate_way_node
 #       lib_deps names tmrh20/RF24, which the PlatformIO registry no longer
