@@ -230,6 +230,11 @@ class LoopbackSource(Source):
     gain a microphone introduces.
     """
 
+    # How often to re-check the default output, in frames. Plugging in
+    # headphones usually swaps the default sink for a different one entirely,
+    # and the old monitor then yields silence forever.
+    DEFAULT_CHECK_FRAMES = 60
+
     def __init__(self, settings: Settings, target: str | int | None = None):
         super().__init__(settings)
         if shutil.which("parec") is None:
@@ -238,13 +243,21 @@ class LoopbackSource(Source):
                 "(Debian/Ubuntu: apt install pulseaudio-utils). "
                 "Use --source mic for a hardware input instead."
             )
-        self.device = resolve_monitor(target if target is not None else settings.audio.input_device)
-        self._proc = subprocess.Popen(
+        wanted = target if target is not None else settings.audio.input_device
+        # With no explicit target the intent is "whatever is playing", so track
+        # the default output as it changes rather than pinning to one device.
+        self.follow_default = wanted is None or wanted == ""
+        self.device = resolve_monitor(wanted)
+        self.reconnects = 0
+        self._proc = self._spawn()
+
+    def _spawn(self) -> subprocess.Popen:
+        return subprocess.Popen(
             [
                 "parec",
                 f"--device={self.device}",
                 "--format=s16le",
-                f"--rate={settings.audio.rate}",
+                f"--rate={self.settings.audio.rate}",
                 "--channels=1",
                 # Keep the server-side buffer short so the lights track the
                 # audio rather than trailing it.
@@ -254,6 +267,20 @@ class LoopbackSource(Source):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+
+    def _follow(self) -> bool:
+        """Re-point at the default output if it has changed. True if it moved."""
+        try:
+            current = resolve_monitor(None)
+        except (RuntimeError, ValueError):
+            return False
+        if current == self.device:
+            return False
+        self.device = current
+        self.reconnects += 1
+        self._stop_proc()
+        self._proc = self._spawn()
+        return True
 
     def frames(self) -> Iterator[np.ndarray]:
         want = self.frame_size * 2          # int16
@@ -266,10 +293,24 @@ class LoopbackSource(Source):
         # flowing and stops the spin when it is not.
         interval = self.frame_size / self.settings.audio.rate
         next_due = time.monotonic()
+        seen = 0
         while True:
+            if self.follow_default:
+                seen += 1
+                if seen >= self.DEFAULT_CHECK_FRAMES:
+                    seen = 0
+                    if self._follow():
+                        stream = self._proc.stdout
+                        assert stream is not None
+                        next_due = time.monotonic()
+
             raw = stream.read(want)
             if not raw or len(raw) < want:
                 if self._proc.poll() is not None:
+                    if self.follow_default and self._follow():
+                        stream = self._proc.stdout
+                        assert stream is not None
+                        continue
                     raise RuntimeError(
                         f"parec stopped while reading {self.device!r}; "
                         f"the source may have gone away"
@@ -283,12 +324,15 @@ class LoopbackSource(Source):
             else:
                 next_due = time.monotonic()
 
-    def close(self) -> None:
+    def _stop_proc(self) -> None:
         self._proc.terminate()
         try:
             self._proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             self._proc.kill()
+
+    def close(self) -> None:
+        self._stop_proc()
 
 
 class SynthSource(Source):
