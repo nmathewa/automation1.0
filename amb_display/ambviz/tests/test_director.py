@@ -141,3 +141,49 @@ def test_drums_still_fire_onsets():
         kick = np.exp(-((t * 2) % 1.0) * 10) * np.sin(2 * np.pi * 60 * t) * 1.3
         v.process(np.stack([kick, kick], axis=1) * 7000)
     assert v.beats - before >= 15, f"only {v.beats - before} onsets on a drum track"
+
+
+def _f(**kw):
+    kw.setdefault("mel", np.zeros(24))
+    kw.setdefault("volume", 0.2)
+    return Features(**kw)
+
+
+#: A shortlist with one member of each family, as the new effects are meant to
+#: be used. Scored against the whole library instead, ``puddles`` and
+#: ``pixelwave`` are near-ties -- they are both "light on an onset", and
+#: ``puddles`` exists as the replacement for ``pixelwave`` rather than
+#: alongside it. Nothing distinguishes them until there is a feature for how
+#: *regular* a pulse is.
+WIDE = ("bars", "energy", "scroll", "spectrum", "waterfall",
+        "pacifica", "puddles", "freqwave", "fire")
+
+
+def test_each_new_effect_wins_the_scene_it_was_built_for():
+    """A candidate nobody ever picks is dead weight in the shortlist."""
+    cases = {
+        # calm, no pulse -> the ambient swell
+        "pacifica": _f(energy=0.15, dialogue=0.9, onset_rate=0.0, brightness=0.1),
+        # a strong rhythm -> the sparse hits
+        "puddles": _f(energy=0.6, onset_rate=1.0, dialogue=0.0, brightness=0.3),
+        # loud and dark -> fire
+        "fire": _f(energy=1.0, onset_rate=0.2, dialogue=0.0, brightness=0.0),
+    }
+    for want, features in cases.items():
+        scores = score_candidates(features, WIDE)
+        assert max(scores, key=scores.get) == want, (want, sorted(
+            scores.items(), key=lambda kv: -kv[1])[:3])
+
+
+def test_puddles_and_pixelwave_overlap():
+    """Documents the tie above, so a future feature that separates them fails
+    this test loudly rather than silently changing behaviour."""
+    f = _f(energy=0.6, onset_rate=1.0)
+    scores = score_candidates(f)
+    assert abs(scores["puddles"] - scores["pixelwave"]) < 0.1
+
+
+def test_new_effects_are_scored_at_all():
+    scores = score_candidates(_f(energy=0.5, onset_rate=0.5))
+    for name in ("pacifica", "puddles", "freqwave", "fire"):
+        assert name in scores, name

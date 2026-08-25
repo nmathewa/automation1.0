@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import numpy as np
 
-import numpy as np
-
 from ambviz.features import Features
 
 def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dict[str, float]:
@@ -74,6 +72,18 @@ def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dic
                      + 0.25 * f.onset_rate,
         # The wash, when it is in the shortlist.
         "cinema": 0.55 * calm,
+        # Ambient swells: the other calm option, and unlike cinema it wants a
+        # scene with no strong pulse rather than merely a quiet one.
+        "pacifica": 0.50 * calm + 0.30 * (1.0 - f.onset_rate) + 0.20 * sustained,
+        # Sparse hits: the only candidate that goes dark between onsets, so it
+        # needs a real rhythm rather than just energy.
+        "puddles": 0.60 * f.onset_rate + 0.25 * percussive + 0.15 * f.energy,
+        # Hue from pitch rather than position: earns its place when the
+        # spectrum moves, which is what brightness tracks.
+        "freqwave": 0.40 * f.brightness + 0.30 * f.energy
+                    + 0.30 * max(electronic, sustained),
+        # Warm and dark, so it suits weight at the bottom of the spectrum.
+        "fire": 0.45 * f.energy + 0.30 * driven + 0.25 * (1.0 - f.brightness),
         # Remaining library members, scored so a custom shortlist still works.
         "gravcenter": 0.55 * f.energy * (1.0 - f.onset_rate) + 0.45 * driven,
         "pixelwave": 0.65 * f.onset_rate + 0.20 * percussive + 0.15 * f.energy,
