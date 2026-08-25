@@ -38,11 +38,11 @@ void setup() {
   FastLED.setBrightness(BRIGHTNESS);
 }
 
-// Forward declarations of an array of cpt-city gradient palettes, and 
+// Forward declarations of an array of cpt-city gradient palettes, and
 // a count of how many there are. The actual color palette definitions
 // are at the bottom of this file.
-// *** FIXED for FastLED 3.8+: Changed Ref to Ptr ***
-extern const TProgmemRGBGradientPalettePtr gGradientPalettes[];
+// (The type is ...Ref, not ...Ptr -- FastLED has never had the latter.)
+extern const TProgmemRGBGradientPaletteRef gGradientPalettes[];
 extern const uint8_t gGradientPaletteCount;
 
 // Current palette number from the 'playlist' of color palettes
@@ -420,8 +420,7 @@ DEFINE_GRADIENT_PALETTE( bhw1_28_gp ) {
   255,   0,149,242};
 
 // Single array of defined cpt-city color palettes.
-// *** FIXED for FastLED 3.8+: Changed Ref to Ptr ***
-const TProgmemRGBGradientPalettePtr gGradientPalettes[] = {
+const TProgmemRGBGradientPaletteRef gGradientPalettes[] = {
   bhw1_28_gp,
   Sunset_Real_gp,
   es_rivendell_15_gp,
@@ -458,9 +457,8 @@ const TProgmemRGBGradientPalettePtr gGradientPalettes[] = {
   Blue_Cyan_Yellow_gp };
 
 // Count of how many cpt-city gradients are defined:
-// *** FIXED for FastLED 3.8+: Changed Ref to Ptr ***
 const uint8_t gGradientPaletteCount = 
-  sizeof( gGradientPalettes) / sizeof( TProgmemRGBGradientPalettePtr );
+  sizeof( gGradientPalettes) / sizeof( TProgmemRGBGradientPaletteRef );
 
 
 void loop()
