@@ -50,27 +50,47 @@ def test_mono_input_still_works_and_reports_mono():
     assert v.stereo is False
 
 
-def test_suppression_cancels_the_vocal_relative_to_a_panned_part():
-    """Measured as a ratio inside one run.
+def test_suppression_leaves_rhythm_alone():
+    """The reason it applies to colour only.
 
-    The Mel output is gain-controlled, so absolute levels are renormalised every
-    frame and cannot be compared between two runs -- removing the vocal makes
-    the AGC re-expand everything else, which looks like the kick got louder.
-    The vocal-to-guitar ratio is immune to that: both are scaled by the same
-    gain, so only their relative change shows.
+    L - R removes everything centred, and in a real mix that is the kick and
+    snare as much as the voice. Applied to the whole analysis it removed the
+    song rather than the singer -- onsets fell from 93 to 21 on this material.
+    Level, onsets and energy must come from the full mix.
     """
-    # No kick here: it is centred and very loud, and the gain control would
-    # normalise to it and crush both bands under test into the noise floor.
-    # Low-frequency protection has its own test below.
-    stereo = mix(2.0, kick=0.0)
+    rate = RATE
 
-    def ratio(amount):
-        vocal = band_energy(viz(amount), stereo, 900)
-        guitar = band_energy(viz(amount), stereo, 1500)
-        return vocal / max(guitar, 1e-9)
+    def clip(i, n):
+        t = (np.arange(n) + i * n) / rate
+        note = [330, 392, 440, 494][int((i // 25) % 4)]
+        voice = np.sin(2 * np.pi * note * t) * (0.55 + 0.45 * np.sin(2 * np.pi * 5 * t)) * 0.8
+        kick = np.exp(-((t * 2) % 1.0) * 10) * np.sin(2 * np.pi * 60 * t) * 1.1
+        return np.stack([voice + kick + 0.3 * np.sin(2 * np.pi * 147 * t),
+                         voice + kick + 0.3 * np.sin(2 * np.pi * 220 * t)], axis=1) * 7000
 
-    off, on = ratio(0.0), ratio(0.95)
-    assert on < off * 0.5, f"vocal:guitar ratio only fell from {off:.3f} to {on:.3f}"
+    counts = []
+    for amount in (0.0, 0.9):
+        v = Visualizer(Settings.load(overrides={
+            "effect": {"name": "cinema"}, "dsp": {"vocal_suppression": amount},
+            "mood": {"scene_weight": 0.0}}))
+        n = v.samples_per_frame
+        before = v.beats
+        for i in range(int(15 * v.settings.audio.fps)):
+            v.process(clip(i, n))
+        counts.append(v.beats - before)
+
+    plain, suppressed = counts
+    assert suppressed >= plain * 0.8, \
+        f"suppression cost the beat: {plain} onsets became {suppressed}"
+
+
+def test_suppression_still_removes_centred_content_from_the_colour_path():
+    v = viz(0.95)
+    bins = 1025
+    freqs = np.fft.rfftfreq(2 * (bins - 1), 1 / RATE)
+    inside = (freqs >= 180) & (freqs <= 5000)
+    out = v._suppress_centre(np.ones(bins), np.zeros(bins), 0.95)
+    assert out[inside].max() <= 0.06, "centred content should be nearly gone in band"
 
 
 def test_the_band_protects_low_frequencies():

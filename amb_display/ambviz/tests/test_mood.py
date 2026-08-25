@@ -207,7 +207,10 @@ def test_a_fight_scene_reaches_the_spectrum_and_dialogue_does_not():
         means.append(float(np.mean(seg[len(seg) // 2:])))
 
     quiet_a, action, quiet_b = means
-    assert action > 0.5, f"the fight only reached detail {action:.2f}"
+    # The separation is the point, not any particular level: adding an absolute
+    # floor to onset detection removed spurious onsets that had been inflating
+    # the fight's energy, so the absolute figure moved while the gap did not.
+    assert action > 0.4, f"the fight only reached detail {action:.2f}"
     assert quiet_a < 0.3 and quiet_b < 0.3, f"dialogue sat at {quiet_a:.2f}/{quiet_b:.2f}"
     assert action > max(quiet_a, quiet_b) * 3
 

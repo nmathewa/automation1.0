@@ -57,7 +57,9 @@ def score_candidates(f: Features) -> dict[str, float]:
     # The classifier only tips a decision -- leaning on it made every candidate
     # score zero whenever it was quiet or absent, so the wash won by default and
     # nothing ever switched.
-    calm = max(f.dialogue, sustained, 1.0 - f.energy)
+    # Singing counts toward calm: a voice is something to sit behind, not
+    # something to chase.
+    calm = max(f.dialogue, sustained, voice, 1.0 - f.energy)
 
     return {
         # A spectrum when there is width worth showing.
@@ -69,9 +71,10 @@ def score_candidates(f: Features) -> dict[str, float]:
         # Loud and weighty, without a strong pulse.
         "gravcenter": float(np.clip(0.55 * f.energy * (1.0 - f.onset_rate)
                                     + 0.25 * driven + 0.20 * (1.0 - f.brightness), 0, 1)),
-        # Voices and slow harmonic movement.
-        "noisemeter": float(np.clip(0.45 * voice + 0.35 * (1.0 - f.energy)
-                                    + 0.20 * sustained, 0, 1)),
+        # Slow harmonic movement. Deliberately not scored on voice: singing
+        # used to select this, which meant detecting a vocal made the strip
+        # react to it rather than settle down.
+        "noisemeter": float(np.clip(0.55 * (1.0 - f.energy) + 0.45 * sustained, 0, 1)),
         # The floor. Deliberately modest: it should win when nothing else makes
         # a case, not outscore candidates that do.
         DEFAULT: float(np.clip(0.55 * calm, 0, 1)),

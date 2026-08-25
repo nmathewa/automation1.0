@@ -164,8 +164,18 @@ class Dsp:
     onset_refractory: float = 0.12
     """Minimum seconds between beats. 0.12 caps at 500 BPM."""
 
-    vocal_suppression: float = 0.0
+    vocal_suppression: float = 0.9
     """How far to cancel centre-panned content, 0-1. Needs a stereo source.
+
+    Applies to **colour only**. L - R removes everything centred, which in a real
+    mix is the kick, the snare and often the lead as well as the voice -- so
+    suppressing the whole analysis removes the song, not the singer. Level,
+    onsets and energy always come from the full mix; only the hue is derived from
+    the suppressed spectrum. That is why the default can be this aggressive
+    without the strip going quiet.
+
+    The blend is linear in amplitude, so 0.5 really does leave half the voice
+    behind. Values below about 0.8 do very little.
 
     Vocals sit in the centre of almost every mix, so ``L - R`` removes them
     without a model. 1.0 replaces the band entirely with the side channel;
