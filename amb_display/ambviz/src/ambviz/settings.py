@@ -181,6 +181,45 @@ class Dsp:
 
 
 @dataclass
+class Mood:
+    """The slow layer: what the light does over a scene rather than a beat.
+
+    Analysis-level and rig-wide, like ``[dsp]`` -- one mood feeding every node,
+    for the same reason one analysis pass does.
+    """
+
+    response_seconds: float = 8.0
+    """Roughly how long a full colour traverse takes. The subtlety knob."""
+
+    hue_rate: float = 0.125
+    """Maximum hue movement per second, in turns. 0.125 crosses the circle in
+    8 s. Capping the *rate* is what makes it read as calm rather than merely
+    smoothed."""
+
+    deadband: float = 0.01
+    """Hue changes smaller than this produce no movement at all, so the light
+    holds instead of shimmering. Hyperion calls the equivalent hysteresis."""
+
+    floor: float = 0.06
+    """Minimum brightness, 0-1. A strip snapping fully dark during a quiet line
+    is more distracting than one that drifts -- Hyperion's backlight threshold."""
+
+    dialogue_damping: float = 0.8
+    """How far speech suppresses the fast layer, 0-1. Film dialogue is centred,
+    so it is detectable from the mid-to-side ratio without recognising anything."""
+
+    detail: float = 0.35
+    """Ceiling on the fast layer's contribution, before damping."""
+
+    audio_weight: float = 1.0
+    """Weight of the audio-derived mood. Exists so a picture feed can be blended
+    in later without reworking the effect -- see mood.py."""
+
+    range_seconds: float = 45.0
+    """Window the adaptive range learns over. Long enough to span a scene."""
+
+
+@dataclass
 class Effect:
     """Frequency domain to pixels."""
 
@@ -231,6 +270,7 @@ class Settings:
     dsp: Dsp = field(default_factory=Dsp)
     effect: Effect = field(default_factory=Effect)
     smoothing: Smoothing = field(default_factory=Smoothing)
+    mood: Mood = field(default_factory=Mood)
     display_fps: bool = True
 
     def __post_init__(self) -> None:
@@ -320,6 +360,17 @@ class Settings:
             )
         if self.dsp.min_frequency >= self.dsp.max_frequency:
             problems.append("dsp.min_frequency must be below dsp.max_frequency")
+
+        m = self.mood
+        if m.response_seconds <= 0:
+            problems.append("mood.response_seconds must be positive")
+        if m.hue_rate <= 0:
+            problems.append("mood.hue_rate must be positive")
+        for name in ("deadband", "floor", "dialogue_damping", "detail", "audio_weight"):
+            if not 0.0 <= getattr(m, name) <= 1.0:
+                problems.append(f"mood.{name} must be between 0.0 and 1.0")
+        if m.range_seconds < 1.0:
+            problems.append("mood.range_seconds must be at least 1 second")
 
         if not 0.0 <= self.dsp.vocal_suppression <= 1.0:
             problems.append("dsp.vocal_suppression must be between 0.0 and 1.0")

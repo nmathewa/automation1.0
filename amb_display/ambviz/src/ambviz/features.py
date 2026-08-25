@@ -46,6 +46,31 @@ class Features:
 
     silent: bool = False
 
+    centroid: float = 0.5
+    """Spectral centroid, rescaled to the range it has actually occupied.
+
+    The perceptual "brightness" of the sound, and a far better hue driver than
+    band position: it moves when the character of the audio moves, not when its
+    shape happens to sit somewhere. Adaptive rescaling is what keeps it using
+    the whole range on content that only occupies a slice of it."""
+
+    centroid_hz: float = 0.0
+    """The same thing before any rescaling, in Hz.
+
+    A slow consumer wants this: it must smooth first and learn the range of the
+    *smoothed* signal. Learning the range of the raw one instead measures how far
+    speech jitters frame to frame, which is far wider than how far the mood moves
+    across a scene -- and the mood then averages to the middle of it."""
+
+    dialogue: float = 0.0
+    """How centre-dominated the speech band is, 0-1.
+
+    Film dialogue is the centre channel, so it cancels in ``L - R``. A high
+    value means someone is probably talking, without recognising anything."""
+
+    slow: float = 0.0
+    """Level on a scene time-scale rather than a frame one -- the mood signal."""
+
     @property
     def bands(self) -> int:
         return len(self.mel)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 
 from ambviz import melbank
@@ -89,3 +91,87 @@ def interpolate(y: np.ndarray, length: int) -> np.ndarray:
     if len(y) == length:
         return y
     return np.interp(np.linspace(0, 1, length), np.linspace(0, 1, len(y)), y)
+
+
+class AdaptiveRange:
+    """Rescales a feature to the range it has actually been occupying.
+
+    A fixed mapping assumes the input uses its whole nominal range. Real content
+    rarely does -- a film's spectral centroid may never leave a narrow slice --
+    and everything then maps to the same colour. Tracking the observed range and
+    stretching it back out is what stops that.
+
+    Percentiles rather than min and max: a single loud transient would otherwise
+    set the ceiling and flatten the mapping for as long as the window is deep.
+    """
+
+    def __init__(self, seconds: float = 45.0, fps: float = 60.0,
+                 low_pct: float = 5.0, high_pct: float = 95.0,
+                 min_span: float = 1e-6, relative_span: float = 0.02):
+        self.low_pct = low_pct
+        self.high_pct = high_pct
+        self.min_span = min_span
+        # The floor has to scale with the feature, not be an absolute number.
+        # A centroid in Hz drifting by half a hertz is noise, but half a hertz
+        # comfortably exceeds any fixed epsilon -- and rescaling it would stretch
+        # that noise across the whole output range.
+        self.relative_span = relative_span
+        # One sample per frame would be needlessly dense for a 45 s window, and
+        # percentiles over 2700 values are not free at 60 fps.
+        self.stride = max(1, int(fps / 8))
+        self._history: deque[float] = deque(maxlen=max(8, int(seconds * fps / self.stride)))
+        self._seen = 0
+        self.low = 0.0
+        self.high = 1.0
+
+    def update(self, value: float) -> float:
+        """Record ``value`` and return it rescaled to 0-1 over the seen range."""
+        value = float(value)
+        self._seen += 1
+        if self._seen % self.stride == 0 or not self._history:
+            self._history.append(value)
+            if len(self._history) >= 4:
+                data = np.fromiter(self._history, dtype=float)
+                self.low = float(np.percentile(data, self.low_pct))
+                self.high = float(np.percentile(data, self.high_pct))
+        span = self.high - self.low
+        floor = max(self.min_span, self.relative_span * abs(self.low + self.high) / 2.0)
+        if span < floor:
+            return 0.5          # not actually varying; sit in the middle
+        return float(np.clip((value - self.low) / span, 0.0, 1.0))
+
+    @property
+    def span(self) -> float:
+        return self.high - self.low
+
+
+class RateLimiter:
+    """Caps how fast a value may move, with a deadband.
+
+    :class:`ExpFilter` smooths but places no ceiling on rate: a large step still
+    produces a large first move. For a mood layer the rate *is* the point --
+    "gentle over several seconds" is a statement about maximum speed. The
+    deadband stops sub-threshold wobble from producing any movement at all,
+    which is what separates a calm light from a nervous one.
+    """
+
+    def __init__(self, per_second: float, value: float = 0.0,
+                 deadband: float = 0.0, wrap: bool = False):
+        self.per_second = per_second
+        self.deadband = deadband
+        self.wrap = wrap
+        self.value = value
+
+    def update(self, target: float, dt: float) -> float:
+        delta = target - self.value
+        if self.wrap:
+            # Hue is circular: 0.95 -> 0.05 is a short step forward, not a long
+            # one backward.
+            delta = (delta + 0.5) % 1.0 - 0.5
+        if abs(delta) <= self.deadband:
+            return self.value
+        step = self.per_second * max(dt, 0.0)
+        self.value += float(np.clip(delta, -step, step))
+        if self.wrap:
+            self.value %= 1.0
+        return self.value

@@ -41,6 +41,14 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "dsp.onset_refractory",
     "dsp.vocal_suppression",
     "dsp.vocal_band",
+    # the slow layer
+    "mood.response_seconds",
+    "mood.hue_rate",
+    "mood.deadband",
+    "mood.floor",
+    "mood.dialogue_damping",
+    "mood.detail",
+    "mood.audio_weight",
     # how hard the smoothing bites
     "smoothing.red",
     "smoothing.green",

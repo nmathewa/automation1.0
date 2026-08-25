@@ -306,6 +306,20 @@
         </div>
       </div>
       <div class="ctl">
+        <span>Mood response <small id="mood-note"></small></span>
+        <div class="row">
+          <input type="range" id="ctl-hue-rate" min="0.02" max="0.5" step="0.005">
+          <output id="out-hue-rate">—</output>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Detail / dialogue damping</span>
+        <div class="row">
+          <input type="range" id="ctl-detail" min="0" max="1" step="0.05">
+          <input type="range" id="ctl-damp" min="0" max="1" step="0.05">
+        </div>
+      </div>
+      <div class="ctl">
         <span>Mel bands</span>
         <div class="row">
           <input type="range" id="ctl-bins" min="4" max="64" step="1">
@@ -861,6 +875,9 @@
     if (engine.vocal_band && editing !== "vhigh") $("ctl-vhigh").value = engine.vocal_band[1];
     // Cancelling the centre needs two channels; say so rather than sitting inert.
     $("vocal-note").textContent = engine.stereo === false ? "— needs a stereo source" : "";
+    if (engine.dialogue !== undefined) {
+      $("mood-note").textContent = engine.dialogue > 0.85 ? "— speech detected" : "";
+    }
     if (editing !== "minf") $("ctl-minf").value = engine.min_frequency;
     if (editing !== "maxf") $("ctl-maxf").value = engine.max_frequency;
     $("spectrum-range").textContent = `${engine.min_frequency}–${engine.max_frequency} Hz`;
@@ -882,6 +899,14 @@
     }
     if (force || editing !== "vlow") $("ctl-vlow").value = cfg.dsp.vocal_band[0];
     if (force || editing !== "vhigh") $("ctl-vhigh").value = cfg.dsp.vocal_band[1];
+    if (cfg.mood) {
+      if (force || editing !== "huerate") {
+        $("ctl-hue-rate").value = cfg.mood.hue_rate;
+        $("out-hue-rate").textContent = (1 / cfg.mood.hue_rate).toFixed(1) + "s/turn";
+      }
+      if (force || editing !== "detail") $("ctl-detail").value = cfg.mood.detail;
+      if (force || editing !== "damp") $("ctl-damp").value = cfg.mood.dialogue_damping;
+    }
     if (force || editing !== "bins") {
       $("ctl-bins").value = cfg.dsp.fft_bins;
       $("out-bins").textContent = cfg.dsp.fft_bins;
@@ -906,6 +931,11 @@
   bindLive($("ctl-bins"), "bins",
     (v) => ($("out-bins").textContent = v),
     (v) => ({ dsp: { fft_bins: Number(v) } }));
+  bindLive($("ctl-hue-rate"), "huerate",
+    (v) => ($("out-hue-rate").textContent = (1 / Number(v)).toFixed(1) + "s/turn"),
+    (v) => ({ mood: { hue_rate: Number(v) } }));
+  bindLive($("ctl-detail"), "detail", () => {}, (v) => ({ mood: { detail: Number(v) } }));
+  bindLive($("ctl-damp"), "damp", () => {}, (v) => ({ mood: { dialogue_damping: Number(v) } }));
   bindLive($("ctl-vocal"), "vocal",
     (v) => ($("out-vocal").textContent = Number(v).toFixed(2)),
     (v) => ({ dsp: { vocal_suppression: Number(v) } }));

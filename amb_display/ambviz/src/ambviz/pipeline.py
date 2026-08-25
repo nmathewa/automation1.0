@@ -7,7 +7,7 @@ import time
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
-from ambviz.dsp import EPS, ExpFilter, MelBank
+from ambviz.dsp import EPS, AdaptiveRange, ExpFilter, MelBank
 from ambviz.effects import EFFECTS
 from ambviz.features import Features, OnsetDetector
 from ambviz.settings import Settings
@@ -64,6 +64,14 @@ class Visualizer:
         self.frames = 0
         self._fps = ExpFilter(float(settings.audio.fps), alpha_decay=0.2, alpha_rise=0.2)
         self._last_frame: float | None = None
+
+        fps = float(settings.audio.fps)
+        self.centroid_range = AdaptiveRange(seconds=settings.mood.range_seconds, fps=fps)
+        # One frame over the response time: a level envelope that moves over a
+        # scene rather than a beat.
+        alpha = float(np.clip(1.0 / max(settings.mood.response_seconds * fps, 1.0), 1e-4, 0.5))
+        self.slow_level = ExpFilter(0.0, alpha_decay=alpha, alpha_rise=alpha * 3)
+        self._speech_mask: np.ndarray | None = None
 
         self.onsets = OnsetDetector(
             sensitivity=settings.dsp.onset_sensitivity,
@@ -144,6 +152,9 @@ class Visualizer:
             "stereo": self.stereo,
             "vocal_suppression": s.dsp.vocal_suppression,
             "vocal_band": list(s.dsp.vocal_band),
+            "centroid": round(float(self.features.centroid), 3),
+            "dialogue": round(float(self.features.dialogue), 3),
+            "slow": round(float(self.features.slow), 4),
             "mel": [round(float(v), 4) for v in self.mel],
             "onset": round(float(self.features.onset), 3),
             "beat": self.features.beat,
@@ -183,7 +194,12 @@ class Visualizer:
         self._roll_side[-1, :] = y_side[:self.samples_per_frame]
         data = np.concatenate(self._roll, axis=0).astype(np.float32)
 
-        elapsed = now - self._started
+        # Audio time, not wall-clock. Anything downstream that integrates over
+        # time -- the mood's rate limiter, the onset refractory -- must advance
+        # with the audio it is describing. Wall-clock makes offline processing
+        # run the mood far too fast and makes a dropped frame skew it, and it
+        # makes results irreproducible between runs.
+        elapsed = self.frames * self.samples_per_frame / float(self.settings.audio.rate)
         self.volume = float(np.max(np.abs(data)))
         self.silent = self.volume < self.settings.audio.min_volume
         if self.silent:
@@ -198,10 +214,17 @@ class Visualizer:
         # step in the first place.
         spectrum = np.abs(np.fft.rfft(np.pad(data * self._window, (0, pad))))
 
-        suppression = self.settings.dsp.vocal_suppression
-        if suppression > 0.0 and self.stereo:
+        # Computed whenever the input is stereo, not only when suppression is
+        # on: the dialogue indicator needs the side channel either way.
+        side_spectrum = None
+        if self.stereo:
             side = np.concatenate(self._roll_side, axis=0).astype(np.float32)
             side_spectrum = np.abs(np.fft.rfft(np.pad(side * self._window, (0, pad))))
+
+        dialogue = self._dialogue(spectrum, side_spectrum)
+
+        suppression = self.settings.dsp.vocal_suppression
+        if suppression > 0.0 and side_spectrum is not None:
             spectrum = self._suppress_centre(spectrum, side_spectrum, suppression)
 
         mel = self.mel_bank.apply(spectrum) ** self.settings.dsp.mel_exponent
@@ -212,11 +235,43 @@ class Visualizer:
         onset, beat, flux = self.onsets.update(self.mel, elapsed)
         if beat:
             self.beats += 1
+
+        centroid_hz = self._centroid(self.mel)
+        centroid = self.centroid_range.update(centroid_hz)
+        slow = float(self.slow_level.update(float(np.max(self.mel))))
+
         self.features = Features(
             mel=self.mel, volume=self.volume, onset=onset, beat=beat,
             flux=flux, t=elapsed, silent=False,
+            centroid=centroid, centroid_hz=centroid_hz, dialogue=dialogue, slow=slow,
         )
         return self._to_strip(self.effect.render(self.features))
+
+    def _centroid(self, mel: np.ndarray) -> float:
+        """Energy-weighted mean frequency of the filterbank, in Hz."""
+        total = float(np.sum(mel))
+        if total <= EPS:
+            return 0.0
+        return float(np.dot(mel, self.mel_bank.center_frequencies) / total)
+
+    def _dialogue(self, mid: np.ndarray, side: np.ndarray | None) -> float:
+        """How centre-dominated the speech band is, 0-1.
+
+        Centre-panned content cancels in ``L - R``, so a large mid relative to
+        side means the band is dominated by something sitting dead centre --
+        which film dialogue always is. Mono input cannot tell, so it returns 0
+        rather than claiming everything is speech.
+        """
+        if side is None:
+            return 0.0
+        if self._speech_mask is None or len(self._speech_mask) != len(mid):
+            freqs = np.fft.rfftfreq(2 * (len(mid) - 1), 1.0 / self.settings.audio.rate)
+            self._speech_mask = ((freqs >= 300.0) & (freqs <= 3400.0)).astype(np.float32)
+        mid_e = float(np.sum((mid * self._speech_mask) ** 2))
+        side_e = float(np.sum((side * self._speech_mask) ** 2))
+        if mid_e + side_e <= EPS:
+            return 0.0                      # silence says nothing either way
+        return float(mid_e / (mid_e + side_e))
 
     def _suppress_centre(self, mid: np.ndarray, side: np.ndarray, amount: float) -> np.ndarray:
         """Crossfade from mid toward side inside the vocal band.

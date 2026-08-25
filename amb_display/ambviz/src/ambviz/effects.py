@@ -12,6 +12,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from ambviz.dsp import EPS, ExpFilter, interpolate
 from ambviz.features import Features
+from ambviz.mood import AudioMood, blend
 from ambviz.settings import Settings
 
 
@@ -301,6 +302,51 @@ class SolidEffect(Effect):
         return np.repeat(rgb, self.width, axis=1) * 255.0
 
 
+class CinemaEffect(Effect):
+    """A slow wash with just enough detail on top, for film.
+
+    Two layers. The slow one sets hue and brightness from the mood and moves at
+    a capped rate, so a scene changes colour over seconds. The fast one adds
+    level and onset movement, but its gain comes *from* the slow layer and is
+    damped by the dialogue indicator -- so during speech it approaches zero and
+    the light simply holds.
+
+    The brightness floor matters more than it looks. A strip snapping fully dark
+    during a quiet line draws far more attention than one that drifts.
+    """
+
+    clone_across_nodes = False
+
+    def __init__(self, settings: Settings, width: int):
+        super().__init__(settings, width)
+        self.mood_source = AudioMood(settings)
+        self.mood = None
+        self._detail = ExpFilter(np.tile(0.0, width), alpha_decay=0.06, alpha_rise=0.5)
+
+    def render(self, features: Features) -> np.ndarray:
+        cfg = self.settings.mood
+        self.mood = blend([self.mood_source.update(features)])
+        m = self.mood
+
+        # A gentle arch rather than a flat wash, so the strip has shape even
+        # when nothing is moving.
+        x = np.linspace(0.0, 1.0, self.width)
+        shape = 0.75 + 0.25 * np.cos((x - 0.5) * np.pi)
+
+        base = max(m.level, cfg.floor)
+        detail = np.zeros(self.width)
+        if m.detail > 0.0:
+            # Movement drifts along the strip rather than flashing in place.
+            wave = 0.5 + 0.5 * np.sin(x * 2.4 * np.pi - features.t * 0.55)
+            detail = self._detail.update(wave * (0.35 * features.slow + 0.65 * features.onset))
+            detail = detail * m.detail
+
+        value = np.clip(base * shape + detail, 0.0, 1.0)
+        # Hue drifts very slightly along the strip so it is not one flat colour.
+        hue = (m.hue + np.linspace(-0.02, 0.02, self.width)) % 1.0
+        return _hsv_to_rgb(hue, m.saturation, value) * 255.0
+
+
 EFFECTS: dict[str, type[Effect]] = {
     "spectrum": SpectrumEffect,
     "energy": EnergyEffect,
@@ -311,6 +357,7 @@ EFFECTS: dict[str, type[Effect]] = {
     "pixelwave": PixelwaveEffect,
     "noisemeter": NoisemeterEffect,
     "solid": SolidEffect,
+    "cinema": CinemaEffect,
 }
 
 #: Which effects react to beats rather than only to level.
