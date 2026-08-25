@@ -927,7 +927,11 @@
     // change with its remembered value, which would push a stale selection over
     // whatever the server was actually started with -- the server is the
     // authority here, not a tab that happens to be open.
-    if (engine && e.target.value === engine.effect) return;
+    //
+    // Crucially this also skips while `engine` is still null: on a fresh
+    // reconnect the restore fires before the first telemetry arrives, so
+    // "we do not know the server's state yet" must mean "do not push".
+    if (!engine || e.target.value === engine.effect) return;
     send({ effect: { name: e.target.value } });
   });
   bindLive($("ctl-brightness"), "brightness",

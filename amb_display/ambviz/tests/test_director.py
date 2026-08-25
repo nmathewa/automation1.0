@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from ambviz.director import DEFAULT, score_candidates
+from ambviz.director import score_candidates
 from ambviz.effects import Director
 from ambviz.effects import EFFECTS
 from ambviz.features import Features
@@ -19,41 +19,62 @@ def auto(**mood):
 
 
 # ── scoring, without any audio ───────────────────────────────────────────────
-def test_the_wash_wins_a_quiet_centred_scene():
-    scores = score_candidates(Features(mel=np.zeros(24), volume=0.1,
-                                       dialogue=0.95, energy=0.1))
-    assert max(scores, key=lambda k: scores[k]) == DEFAULT
+def test_a_quiet_centred_scene_picks_the_calmest_option():
+    quiet = Features(mel=np.zeros(24), volume=0.1, dialogue=0.95, energy=0.1)
+    scores = score_candidates(quiet, Settings.load().mood.animations)
+    assert max(scores, key=lambda k: scores[k]) == "spectrum"
 
 
-def test_beats_prefer_a_beat_driven_animation():
-    scores = score_candidates(Features(mel=np.zeros(24), volume=0.6,
-                                       dialogue=0.1, energy=0.7,
-                                       onset_rate=0.9, brightness=0.6))
-    assert scores["pixelwave"] > scores[DEFAULT]
+def test_beats_prefer_a_pulse_driven_animation():
+    beat = Features(mel=np.zeros(24), volume=0.6, dialogue=0.1, energy=0.7,
+                    onset_rate=0.9, brightness=0.6)
+    scores = score_candidates(beat, Settings.load().mood.animations)
+    assert scores["scroll"] > scores["spectrum"]
 
 
-def test_wide_loud_content_prefers_a_spectrum():
-    scores = score_candidates(Features(mel=np.zeros(24), volume=0.7,
-                                       dialogue=0.05, energy=0.85,
-                                       onset_rate=0.1, brightness=0.9))
-    assert scores["bars"] > scores[DEFAULT]
+def test_wide_loud_content_prefers_a_band_display():
+    wide = Features(mel=np.zeros(24), volume=0.7, dialogue=0.05, energy=0.85,
+                    onset_rate=0.1, brightness=0.9)
+    scores = score_candidates(wide, Settings.load().mood.animations)
+    assert scores["bars"] > scores["spectrum"]
 
 
 def test_every_candidate_is_a_real_effect():
-    names = score_candidates(Features(mel=np.zeros(24), volume=0.0))
-    for name in names:
+    for name in score_candidates(Features(mel=np.zeros(24), volume=0.0)):
         assert name in EFFECTS, f"{name} is scored but not registered"
+
+
+def test_the_shortlist_is_honoured():
+    """The candidate set is configuration, not a code edit."""
+    f = Features(mel=np.zeros(24), volume=0.6, energy=0.8, onset_rate=0.9)
+    scores = score_candidates(f, ("bars", "waterfall"))
+    assert set(scores) == {"bars", "waterfall"}
+
+    v = auto()
+    assert v.effect.allowed == tuple(Settings.load().mood.animations)
+    assert "pixelwave" not in v.effect.allowed
+
+
+def test_an_unknown_animation_is_rejected_at_load():
+    with pytest.raises(ValueError, match="unknown effect"):
+        Settings.load(overrides={"mood": {"animations": ["bars", "nope"]}})
+
+
+def test_auto_cannot_contain_itself():
+    with pytest.raises(ValueError, match="must not contain"):
+        Settings.load(overrides={"mood": {"animations": ["auto"]}})
 
 
 # ── switching discipline ─────────────────────────────────────────────────────
 def test_dwell_time_blocks_a_rapid_second_switch():
     d = Director(Settings.load(), 60)
     d.last_switch = 100.0
+    d.current = "spectrum"
     hot = Features(mel=np.zeros(24), volume=0.6, energy=0.9,
-                   onset_rate=0.95, dialogue=0.0, t=101.0)
-    assert d.choose(hot) == DEFAULT, "switched inside the dwell window"
+                   onset_rate=0.95, dialogue=0.0, brightness=0.9, t=101.0)
+    assert d.choose(hot) == "spectrum", "switched inside the dwell window"
     hot.t = 100.0 + d.settings.mood.switch_dwell + 0.1
-    assert d.choose(hot) != DEFAULT
+    assert d.choose(hot) != "spectrum"
 
 
 def test_a_tie_keeps_what_is_already_running():
@@ -62,7 +83,7 @@ def test_a_tie_keeps_what_is_already_running():
     d.last_switch = -1000.0
     balanced = Features(mel=np.zeros(24), volume=0.4, energy=0.5,
                         onset_rate=0.5, dialogue=0.5, brightness=0.5, t=0.0)
-    scores = score_candidates(balanced)
+    scores = score_candidates(balanced, d.allowed)
     best = max(scores, key=lambda k: scores[k])
     d.current = best
     assert d.choose(balanced) == best

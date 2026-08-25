@@ -11,7 +11,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from ambviz.dsp import EPS, ExpFilter, interpolate
-from ambviz.director import DEFAULT, score_candidates
+from ambviz.director import score_candidates
 from ambviz.features import Features
 from ambviz.mood import AudioMood, blend
 from ambviz.settings import Settings
@@ -382,7 +382,8 @@ class Director(Effect):
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
         self._cache: dict[str, Effect] = {}
-        self.current = DEFAULT
+        self.allowed = tuple(settings.mood.animations)
+        self.current = self.allowed[0]
         self.previous: str | None = None
         self.fade = 1.0
         """1.0 once the current animation is fully faded in."""
@@ -400,7 +401,9 @@ class Director(Effect):
     def choose(self, f: Features) -> str:
         """The animation that should be running, given hysteresis and dwell."""
         cfg = self.settings.mood
-        self.scores = score_candidates(f)
+        self.scores = score_candidates(f, self.allowed)
+        if not self.scores:
+            return self.current
         best = max(self.scores, key=lambda k: self.scores[k])
         if best == self.current:
             return self.current

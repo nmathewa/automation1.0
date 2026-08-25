@@ -254,6 +254,13 @@ class Mood:
     The model is the better judge of "is this speech", but it works on ~1 s
     windows, so it is blended rather than trusted outright. 0 ignores it."""
 
+    animations: tuple[str, ...] = ("bars", "energy", "scroll", "spectrum", "waterfall")
+    """Which animations "auto" may choose between, in no particular order.
+
+    A setting rather than a fixed list so the shortlist can change without a
+    code edit. Names must exist in the effect registry; unknown ones are
+    rejected at load rather than silently ignored."""
+
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.
 
@@ -432,6 +439,18 @@ class Settings:
                      "audio_weight", "accent"):
             if not 0.0 <= getattr(m, name) <= 1.0:
                 problems.append(f"mood.{name} must be between 0.0 and 1.0")
+        from ambviz.effects import EFFECTS  # noqa: PLC0415 - keeps this numpy-free until needed
+
+        if not m.animations:
+            problems.append("mood.animations must list at least one animation")
+        unknown = [n for n in m.animations if n not in EFFECTS]
+        if unknown:
+            problems.append(
+                f"mood.animations names unknown effect(s) {unknown}; "
+                f"expected from {sorted(n for n in EFFECTS if n != 'auto')}"
+            )
+        if "auto" in m.animations:
+            problems.append("mood.animations must not contain 'auto'")
         if m.switch_dwell < 0 or m.crossfade <= 0:
             problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
         if not 0.0 <= m.switch_margin <= 1.0:

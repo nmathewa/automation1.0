@@ -34,13 +34,11 @@ from __future__ import annotations
 
 import numpy as np
 
+import numpy as np
+
 from ambviz.features import Features
 
-#: The wash. Everything falls back here when nothing else makes a case.
-DEFAULT = "cinema"
-
-
-def score_candidates(f: Features) -> dict[str, float]:
+def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dict[str, float]:
     """How well each animation suits this moment, 0-1 each.
 
     Reads only from :class:`~ambviz.features.Features`, so it stays testable
@@ -53,29 +51,35 @@ def score_candidates(f: Features) -> dict[str, float]:
     sustained = max(scene.get("orchestral"), scene.get("acoustic")) if scene.available else 0.0
     voice = scene.get("voice") if scene.available else 0.0
 
-    # Scored from the DSP features first, because those work on any material.
-    # The classifier only tips a decision -- leaning on it made every candidate
-    # score zero whenever it was quiet or absent, so the wash won by default and
-    # nothing ever switched.
-    # Singing counts toward calm: a voice is something to sit behind, not
-    # something to chase.
+    # Singing counts toward calm: a voice is something to sit behind, not chase.
     calm = max(f.dialogue, sustained, voice, 1.0 - f.energy)
 
-    return {
-        # A spectrum when there is width worth showing.
-        "bars": float(np.clip(0.45 * f.energy + 0.35 * f.brightness
-                              + 0.20 * max(percussive, electronic), 0, 1)),
-        # Beats, when they are the point rather than a texture.
-        "pixelwave": float(np.clip(0.65 * f.onset_rate + 0.20 * percussive
-                                   + 0.15 * f.energy, 0, 1)),
-        # Loud and weighty, without a strong pulse.
-        "gravcenter": float(np.clip(0.55 * f.energy * (1.0 - f.onset_rate)
-                                    + 0.25 * driven + 0.20 * (1.0 - f.brightness), 0, 1)),
-        # Slow harmonic movement. Deliberately not scored on voice: singing
-        # used to select this, which meant detecting a vocal made the strip
-        # react to it rather than settle down.
-        "noisemeter": float(np.clip(0.55 * (1.0 - f.energy) + 0.45 * sustained, 0, 1)),
-        # The floor. Deliberately modest: it should win when nothing else makes
-        # a case, not outscore candidates that do.
-        DEFAULT: float(np.clip(0.55 * calm, 0, 1)),
+    # Scored from the DSP features first, because those work on any material.
+    # Leaning on the classifier made every candidate score zero whenever it was
+    # quiet or absent, and then nothing ever switched.
+    scores = {
+        # Per-band blocks: wants width worth showing.
+        "bars": 0.45 * f.energy + 0.35 * f.brightness
+                + 0.20 * max(percussive, electronic),
+        # Bars growing from the centre: loud and weighty, without a strong pulse.
+        "energy": 0.50 * f.energy * (1.0 - f.onset_rate)
+                  + 0.25 * driven + 0.25 * (1.0 - f.brightness),
+        # Colour injected at the centre and pushed outward: suits a pulse.
+        "scroll": 0.55 * f.onset_rate + 0.25 * percussive + 0.20 * f.energy,
+        # Mirrored filterbank, the calmest of the spectral displays.
+        "spectrum": 0.45 * calm + 0.35 * f.energy + 0.20 * sustained,
+        # Position becomes time: rewards material that changes rather than one
+        # that is merely loud.
+        "waterfall": 0.45 * f.brightness + 0.30 * (1.0 - f.dialogue)
+                     + 0.25 * f.onset_rate,
+        # The wash, when it is in the shortlist.
+        "cinema": 0.55 * calm,
+        # Remaining library members, scored so a custom shortlist still works.
+        "gravcenter": 0.55 * f.energy * (1.0 - f.onset_rate) + 0.45 * driven,
+        "pixelwave": 0.65 * f.onset_rate + 0.20 * percussive + 0.15 * f.energy,
+        "noisemeter": 0.55 * (1.0 - f.energy) + 0.45 * sustained,
+        "solid": 0.40 * calm,
     }
+    if allowed:
+        scores = {k: v for k, v in scores.items() if k in allowed}
+    return {k: float(np.clip(v, 0.0, 1.0)) for k, v in scores.items()}

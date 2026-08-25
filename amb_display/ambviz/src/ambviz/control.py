@@ -47,6 +47,7 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "mood.attack",
     "mood.release",
     "mood.accent",
+    "mood.animations",
     "mood.switch_dwell",
     "mood.switch_margin",
     "mood.crossfade",
