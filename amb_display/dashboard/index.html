@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>amb_display · strip dashboard</title>
+<style>
+  /* Palette slots validated with the data-viz validator in both modes:
+     dark  #e66767/#008300/#3987e5 on #1a1a19 — all checks PASS
+     light #e34948/#008300/#2a78d6 on #fcfcfb — CVD 7.2 (floor band), so the
+     three channel series are direct-labelled, which is the required relief. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:      #0d0d0d;
+    --surface:    #1a1a19;
+    --ink:        #ffffff;
+    --ink-2:      #c3c2b7;
+    --muted:      #898781;
+    --grid:       #2c2c2a;
+    --axis:       #383835;
+    --border:     rgba(255,255,255,0.10);
+    --series-r:   #e66767;
+    --series-g:   #008300;
+    --series-b:   #3987e5;
+    --accent:     #3987e5;
+    --good:       #0ca30c;
+    --warn:       #fab219;
+    --crit:       #e66767;
+    --led-off:    #232322;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --plane:      #f9f9f7;
+    --surface:    #fcfcfb;
+    --ink:        #0b0b0b;
+    --ink-2:      #52514e;
+    --muted:      #898781;
+    --grid:       #e1e0d9;
+    --axis:       #c3c2b7;
+    --border:     rgba(11,11,11,0.10);
+    --series-r:   #e34948;
+    --series-g:   #008300;
+    --series-b:   #2a78d6;
+    --accent:     #2a78d6;
+    --good:       #0ca30c;
+    --warn:       #fab219;
+    --crit:       #d03b3b;
+    --led-off:    #e4e3dd;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--plane); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  h1 span { color: var(--muted); font-weight: 400; }
+  .spacer { flex: 1; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px 5px 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface);
+    font-size: 12.5px; color: var(--ink-2);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .pill[data-state="live"] .dot { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+  .pill[data-state="live"] { color: var(--ink); }
+
+  button {
+    font: inherit; font-size: 12.5px; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 11px; cursor: pointer;
+  }
+  button:hover { color: var(--ink); }
+  button[aria-pressed="true"] { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+  .seg { display: inline-flex; gap: 4px; }
+
+  .api { gap: 6px; padding-right: 9px; }
+  .api label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .api input {
+    font: inherit; font-size: 12px; color: var(--ink); background: transparent;
+    border: 0; border-bottom: 1px solid var(--border); width: 148px; padding: 1px 0;
+  }
+  .api input:focus { outline: none; border-bottom-color: var(--accent); }
+  #api-state { font-size: 11px; color: var(--muted); }
+  #api-state[data-ok="true"] { color: var(--good); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 11px; padding: 16px 18px;
+  }
+  .card h2 {
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px;
+  }
+  .card-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  .card-head h2 { margin: 0; }
+
+  /* KPI row */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .tile { display: flex; flex-direction: column; gap: 2px; }
+  .tile .label { font-size: 12px; color: var(--muted); }
+  .tile .value { font-size: 27px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+  /* An em-dash at 27px/600 reads as a rule, not as "no value yet". */
+  .tile .value.pending { color: var(--muted); font-weight: 400; font-size: 17px; }
+  .tile .value.pending u { font-size: 12px; }
+  .tile .value u { font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; margin-left: 3px; }
+  .tile .sub { font-size: 11.5px; color: var(--muted); }
+  .tile canvas { width: 100%; height: 22px; margin-top: 6px; display: block; }
+
+  /* strip */
+  .strip-wrap { position: relative; }
+  #wall { width: 100%; height: 74px; display: block; border-radius: 8px; }
+  #strip { width: 100%; height: 70px; display: block; margin-top: 6px; }
+  .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+  /* chart */
+  .plot-wrap { position: relative; }
+  #plot { width: 100%; height: 210px; display: block; }
+  .legend { display: flex; gap: 16px; align-items: center; }
+  .key { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; min-width: 108px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.28); z-index: 5;
+  }
+  .tip .t-head { color: var(--muted); margin-bottom: 5px; font-size: 11px; }
+  .tip .t-row { display: flex; align-items: center; gap: 7px; justify-content: space-between; }
+  .tip .t-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* table view */
+  table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--muted); font-weight: 500; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .tbl-scroll { max-height: 260px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--axis) transparent; }
+  [hidden] { display: none !important; }
+  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+
+  /* banner */
+  .banner {
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+    background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+    border-radius: 9px; padding: 10px 14px; font-size: 13px; color: var(--ink);
+    display: flex; gap: 9px; align-items: baseline;
+  }
+  .banner b { color: var(--warn); font-weight: 600; }
+
+  /* spectrum */
+  #spectrum { width: 100%; height: 168px; display: block; }
+
+  /* controls */
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px 22px; }
+  .ctl { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .ctl > span { font-size: 12px; color: var(--muted); }
+  .ctl .row { display: flex; align-items: center; gap: 8px; }
+  .ctl output { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 34px; }
+  input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 0; }
+  input[type="number"] {
+    font: inherit; font-size: 12px; color: var(--ink); background: transparent;
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; width: 100%; min-width: 0;
+  }
+  input[type="number"]:focus { outline: none; border-color: var(--accent); }
+  details.smoothing { grid-column: 1 / -1; }
+  details.smoothing summary {
+    font-size: 12px; color: var(--muted); cursor: pointer; list-style: none;
+    padding: 6px 0; border-top: 1px solid var(--grid);
+  }
+  details.smoothing summary::before { content: "▸ "; }
+  details.smoothing[open] summary::before { content: "▾ "; }
+  .alphas { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; padding-top: 10px; }
+  .alpha { display: grid; grid-template-columns: 1fr 62px 62px; gap: 7px; align-items: center; }
+  .alpha span { font-size: 11.5px; color: var(--ink-2); }
+  .ctl-err { font-size: 12px; color: var(--crit); min-height: 16px; }
+
+  @media (max-width: 720px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>amb_display <span>· strip dashboard</span></h1>
+    <div class="pill" id="status" data-state="idle">
+      <span class="dot" aria-hidden="true"></span><span id="status-text">waiting for packets</span>
+    </div>
+    <div class="spacer"></div>
+    <span class="pill" id="peer">no sender</span>
+    <form class="pill api" id="api-form" title="ambviz telemetry API">
+      <label for="api-url">API</label>
+      <input id="api-url" name="api" spellcheck="false" autocomplete="off">
+      <span id="api-state" data-ok="false">connecting</span>
+    </form>
+    <button id="theme" title="Switch theme">Light</button>
+  </header>
+
+  <div class="banner" id="banner" hidden>
+    <b>!</b><span id="banner-text"></span>
+  </div>
+
+  <section class="kpis" aria-label="Traffic statistics" id="card-kpis" data-provider="strip">
+    <div class="card tile">
+      <span class="label">Packets</span>
+      <span class="value pending"><span id="k-pps">—</span><u>/s</u></span>
+      <span class="sub" id="k-pps-sub">0 total</span>
+      <canvas id="spark-pps" aria-hidden="true"></canvas>
+    </div>
+    <div class="card tile">
+      <span class="label">Pixel updates</span>
+      <span class="value pending"><span id="k-ups">—</span><u>/s</u></span>
+      <span class="sub" id="k-ups-sub">diff-only protocol</span>
+      <canvas id="spark-ups" aria-hidden="true"></canvas>
+    </div>
+    <div class="card tile">
+      <span class="label">Throughput</span>
+      <span class="value pending"><span id="k-kbs">—</span><u>KB/s</u></span>
+      <span class="sub" id="k-kbs-sub">0 B total</span>
+      <canvas id="spark-kbs" aria-hidden="true"></canvas>
+    </div>
+    <div class="card tile">
+      <span class="label">Strip lit</span>
+      <span class="value pending"><span id="k-cov">—</span><u>%</u></span>
+      <span class="sub" id="k-cov-sub">— of — pixels</span>
+      <canvas id="spark-cov" aria-hidden="true"></canvas>
+    </div>
+  </section>
+
+  <section class="card" id="card-strip" data-provider="strip">
+    <div class="card-head">
+      <h2>Strip</h2>
+      <div class="spacer"></div>
+      <div class="seg">
+        <button id="v-wall" aria-pressed="true">Wall wash</button>
+        <button id="v-index" aria-pressed="false">Index</button>
+      </div>
+    </div>
+    <div class="strip-wrap">
+      <canvas id="wall"></canvas>
+      <canvas id="strip"></canvas>
+      <div class="scale"><span>0</span><span id="scale-mid">—</span><span id="scale-end">—</span></div>
+    </div>
+  </section>
+
+  <section class="card" id="card-controls" data-provider="engine">
+    <div class="card-head">
+      <h2>Controls</h2>
+      <div class="spacer"></div>
+      <a id="dl-toml" download="ambviz.toml"><button type="button">Download TOML</button></a>
+    </div>
+    <div class="controls">
+      <div class="ctl">
+        <span>Effect</span>
+        <div class="seg" id="ctl-effect">
+          <button type="button" data-effect="spectrum">Spectrum</button>
+          <button type="button" data-effect="energy">Energy</button>
+          <button type="button" data-effect="scroll">Scroll</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Brightness</span>
+        <div class="row">
+          <input type="range" id="ctl-brightness" min="0" max="1" step="0.01">
+          <output id="out-brightness">—</output>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Frequency range (Hz)</span>
+        <div class="row">
+          <input type="number" id="ctl-minf" min="20" step="10" aria-label="Minimum frequency">
+          <input type="number" id="ctl-maxf" min="100" step="100" aria-label="Maximum frequency">
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Mel bands</span>
+        <div class="row">
+          <input type="range" id="ctl-bins" min="4" max="64" step="1">
+          <output id="out-bins">—</output>
+        </div>
+      </div>
+      <details class="smoothing">
+        <summary>Smoothing — decay / rise per filter</summary>
+        <div class="alphas" id="ctl-alphas"></div>
+      </details>
+    </div>
+    <div class="ctl-err" id="ctl-err"></div>
+  </section>
+
+  <section class="card" id="card-spectrum" data-provider="engine">
+    <div class="card-head">
+      <h2>Mel filterbank</h2>
+      <div class="spacer"></div>
+      <span class="key" id="spectrum-range">—</span>
+    </div>
+    <div class="plot-wrap" id="spectrum-wrap">
+      <canvas id="spectrum"></canvas>
+      <div class="tip" id="tip-spectrum"></div>
+    </div>
+  </section>
+
+  <section class="card" id="card-channels" data-provider="strip">
+    <div class="card-head">
+      <h2>Channel level by pixel</h2>
+      <div class="spacer"></div>
+      <div class="legend">
+        <span class="key"><span class="swatch" style="background:var(--series-r)"></span>Red</span>
+        <span class="key"><span class="swatch" style="background:var(--series-g)"></span>Green</span>
+        <span class="key"><span class="swatch" style="background:var(--series-b)"></span>Blue</span>
+      </div>
+      <button id="tbl-toggle" aria-pressed="false">Table</button>
+    </div>
+    <div class="plot-wrap" id="plot-wrap">
+      <canvas id="plot"></canvas>
+      <div class="tip" id="tip"></div>
+    </div>
+    <div id="tbl" hidden>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr><th>Pixel</th><th>R</th><th>G</th><th>B</th><th>Hex</th></tr></thead>
+          <tbody id="tbl-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  let pixels = new Uint8Array(0);
+  let count = 0;
+  let stats = null;
+  let history = [];
+  let engine = null;          // engine provider payload, or null when absent
+  let health = null;          // /api/health, tells us which panels to show
+  let editing = null;         // control the user is currently dragging
+  let stripView = "wall";
+  let linked = null;
+  // The strip plate stays dark in both themes -- an LED strip is emissive, and a
+  // dim pixel on a white card reads as a black hole rather than as a dim pixel.
+  const PLATE = "#121211", LED_OFF = "#242423";
+
+  // ── canvas helpers ─────────────────────────────────────────────────────────
+  function fit(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const r = canvas.getBoundingClientRect();
+    if (canvas.width !== Math.round(r.width * dpr) || canvas.height !== Math.round(r.height * dpr)) {
+      canvas.width = Math.round(r.width * dpr);
+      canvas.height = Math.round(r.height * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w: r.width, h: r.height };
+  }
+  const rgb = (i) => [pixels[i * 3] | 0, pixels[i * 3 + 1] | 0, pixels[i * 3 + 2] | 0];
+  const hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+
+  // ── the strip ──────────────────────────────────────────────────────────────
+  function drawStrip() {
+    const { ctx, w, h } = fit($("strip"));
+    ctx.clearRect(0, 0, w, h);
+    if (!count) {
+      ctx.fillStyle = css("--muted");
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("no strip data yet", w / 2, h / 2);
+      return;
+    }
+
+    // 2px surface gap between LEDs rather than a stroked border.
+    ctx.fillStyle = PLATE;
+    ctx.beginPath();
+    ctx.roundRect(0, 4, w, h - 12, 8);
+    ctx.fill();
+
+    const pitch = w / count;
+    const gap = Math.min(2, pitch * 0.22);
+    const bw = Math.max(1, pitch - gap);
+    const radius = Math.min(4, bw / 2);
+    const y = 12, bh = h - 28;
+
+    for (let i = 0; i < count; i++) {
+      const c = rgb(i);
+      const lum = (c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722) / 255;
+      const x = i * pitch + gap / 2;
+      ctx.save();
+      if (lum > 0.02) {
+        ctx.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},${0.55 + 0.45 * lum})`;
+        ctx.shadowBlur = 6 + 20 * lum;
+      }
+      ctx.fillStyle = lum > 0.004 ? `rgb(${c[0]},${c[1]},${c[2]})` : LED_OFF;
+      ctx.beginPath();
+      ctx.roundRect(x, y, bw, bh, radius);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    if (stripView === "index") {
+      ctx.fillStyle = css("--muted");
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      const step = Math.max(1, Math.round(count / Math.floor(w / 34)));
+      for (let i = 0; i < count; i += step) {
+        ctx.fillText(String(i), i * pitch + pitch / 2, h - 1);
+      }
+    }
+  }
+
+  // Approximates the light the strip throws on a wall: each LED smeared wide
+  // and summed, so neighbouring colours blend the way they do in a room.
+  function drawWall() {
+    const { ctx, w, h } = fit($("wall"));
+    ctx.clearRect(0, 0, w, h);
+    if (!count) return;
+    const grad = ctx.createLinearGradient(0, 0, w, 0);
+    const stops = Math.min(count, 96);
+    const span = Math.max(1, Math.round(count / stops));
+    for (let s = 0; s <= stops; s++) {
+      const centre = Math.min(count - 1, s * span);
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let k = centre - span * 2; k <= centre + span * 2; k++) {
+        if (k < 0 || k >= count) continue;
+        const c = rgb(k); r += c[0]; g += c[1]; b += c[2]; n++;
+      }
+      if (!n) continue;
+      grad.addColorStop(Math.min(1, s / stops), `rgb(${r / n | 0},${g / n | 0},${b / n | 0})`);
+    }
+    ctx.fillStyle = grad;
+    ctx.globalAlpha = 0.62;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalAlpha = 1;
+    const fade = ctx.createLinearGradient(0, 0, 0, h);
+    fade.addColorStop(0, "rgba(0,0,0,0)");
+    fade.addColorStop(1, css("--surface"));
+    ctx.fillStyle = fade;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  // ── channel chart ──────────────────────────────────────────────────────────
+  const PAD = { t: 10, r: 42, b: 22, l: 34 };
+  let plotBox = null;
+
+  function drawPlot(hoverIndex) {
+    const { ctx, w, h } = fit($("plot"));
+    ctx.clearRect(0, 0, w, h);
+    const x0 = PAD.l, x1 = w - PAD.r, y0 = PAD.t, y1 = h - PAD.b;
+    plotBox = { x0, x1, y0, y1 };
+    if (x1 <= x0) return;
+    if (!count) {
+      ctx.fillStyle = css("--muted");
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("waiting for strip data", (x0 + x1) / 2, (y0 + y1) / 2);
+      return;
+    }
+
+    const X = (i) => x0 + (count === 1 ? 0 : (i / (count - 1)) * (x1 - x0));
+    const Y = (v) => y1 - (v / 255) * (y1 - y0);
+
+    // hairline solid grid, one shade off the surface
+    ctx.strokeStyle = css("--grid");
+    ctx.lineWidth = 1;
+    ctx.fillStyle = css("--muted");
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (const v of [0, 64, 128, 192, 255]) {
+      const y = Math.round(Y(v)) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillText(String(v), x0 - 7, y);
+    }
+    ctx.strokeStyle = css("--axis");
+    ctx.beginPath();
+    ctx.moveTo(x0, Math.round(Y(0)) + 0.5); ctx.lineTo(x1, Math.round(Y(0)) + 0.5);
+    ctx.stroke();
+
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillStyle = css("--muted");
+    const step = Math.max(1, Math.round(count / Math.floor((x1 - x0) / 46)));
+    for (let i = 0; i < count; i += step) ctx.fillText(String(i), X(i), y1 + 6);
+
+    const series = [
+      { name: "Red", off: 0, color: css("--series-r") },
+      { name: "Green", off: 1, color: css("--series-g") },
+      { name: "Blue", off: 2, color: css("--series-b") },
+    ];
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    for (const s of series) {
+      ctx.strokeStyle = s.color;
+      ctx.beginPath();
+      for (let i = 0; i < count; i++) {
+        const y = Y(pixels[i * 3 + s.off]);
+        i ? ctx.lineTo(X(i), y) : ctx.moveTo(X(i), y);
+      }
+      ctx.stroke();
+    }
+
+    // Direct endpoint labels — the required relief for the light-mode CVD band.
+    // Channels often end at the same level, so nudge the labels apart first.
+    const GAP = 13;
+    const ends = series
+      .map((s) => ({ s, y: Y(pixels[(count - 1) * 3 + s.off]) }))
+      .sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) {
+      if (ends[i].y - ends[i - 1].y < GAP) ends[i].y = ends[i - 1].y + GAP;
+    }
+    const overflow = ends[ends.length - 1].y - (y1 - 2);
+    if (overflow > 0) for (const e of ends) e.y -= overflow;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.font = "600 11px system-ui, sans-serif";
+    for (const e of ends) {
+      ctx.fillStyle = e.s.color;
+      ctx.fillText(e.s.name, x1 + 6, Math.max(y0 + 6, e.y));
+    }
+
+    if (hoverIndex != null && hoverIndex >= 0 && hoverIndex < count) {
+      const x = X(hoverIndex);
+      ctx.strokeStyle = css("--axis");
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, y0); ctx.lineTo(Math.round(x) + 0.5, y1); ctx.stroke();
+      for (const s of series) {
+        const y = Y(pixels[hoverIndex * 3 + s.off]);
+        ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = s.color; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = css("--surface"); ctx.stroke();  // 2px surface ring
+      }
+    }
+  }
+
+  // ── mel filterbank ─────────────────────────────────────────────────────────
+  // Bars, one hue. Height already encodes magnitude, so colouring by height
+  // would double-encode it and burn the only free channel.
+  const SPAD = { t: 10, r: 12, b: 22, l: 34 };
+  let spectrumBox = null;
+
+  function drawSpectrum(hoverBand) {
+    const { ctx, w, h } = fit($("spectrum"));
+    ctx.clearRect(0, 0, w, h);
+    const x0 = SPAD.l, x1 = w - SPAD.r, y0 = SPAD.t, y1 = h - SPAD.b;
+    spectrumBox = { x0, x1, y0, y1 };
+    if (x1 <= x0) return;
+
+    const mel = engine ? engine.mel : null;
+    if (!mel || !mel.length) {
+      ctx.fillStyle = css("--muted");
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(engine ? "no audio" : "waiting for engine", (x0 + x1) / 2, (y0 + y1) / 2);
+      return;
+    }
+
+    const top = 1.2;   // filterbank output is AGC-normalised to about 1.0
+    const Y = (v) => y1 - Math.min(v / top, 1) * (y1 - y0);
+
+    ctx.strokeStyle = css("--grid");
+    ctx.lineWidth = 1;
+    ctx.fillStyle = css("--muted");
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (const v of [0, 0.4, 0.8, 1.2]) {
+      const y = Math.round(Y(v)) + 0.5;
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillText(v.toFixed(1), x0 - 7, y);
+    }
+
+    const pitch = (x1 - x0) / mel.length;
+    const gap = Math.min(2, pitch * 0.25);          // 2px surface gap, no borders
+    const bw = Math.max(1, pitch - gap);
+    for (let i = 0; i < mel.length; i++) {
+      const x = x0 + i * pitch + gap / 2;
+      const y = Y(mel[i]);
+      ctx.fillStyle = i === hoverBand ? css("--ink") : css("--series-b");
+      ctx.beginPath();
+      ctx.roundRect(x, y, bw, Math.max(0, y1 - y), [4, 4, 0, 0]);   // rounded data-end
+      ctx.fill();
+    }
+
+    ctx.strokeStyle = css("--axis");
+    ctx.beginPath();
+    ctx.moveTo(x0, Math.round(y1) + 0.5); ctx.lineTo(x1, Math.round(y1) + 0.5); ctx.stroke();
+
+    const freqs = engine.center_frequencies || [];
+    ctx.fillStyle = css("--muted");
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    const step = Math.max(1, Math.round(mel.length / Math.floor((x1 - x0) / 54)));
+    for (let i = 0; i < mel.length; i += step) {
+      const hz = freqs[i];
+      if (hz == null) continue;
+      ctx.fillText(hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : String(Math.round(hz)),
+                   x0 + i * pitch + pitch / 2, y1 + 6);
+    }
+  }
+
+  $("spectrum").addEventListener("mousemove", (e) => {
+    const mel = engine && engine.mel;
+    if (!spectrumBox || !mel || !mel.length) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const t = (e.clientX - r.left - spectrumBox.x0) / (spectrumBox.x1 - spectrumBox.x0);
+    if (t < 0 || t > 1) return hideSpectrumTip();
+    const band = Math.min(mel.length - 1, Math.floor(t * mel.length));
+    const hz = (engine.center_frequencies || [])[band];
+    const tip = $("tip-spectrum");
+    tip.innerHTML =
+      `<div class="t-head">Band ${band + 1} of ${mel.length}</div>` +
+      `<div class="t-row"><span>Centre</span><b>${hz == null ? "—" : Math.round(hz) + " Hz"}</b></div>` +
+      `<div class="t-row"><span>Level</span><b>${mel[band].toFixed(3)}</b></div>`;
+    tip.style.opacity = "1";
+    const px = spectrumBox.x0 + t * (spectrumBox.x1 - spectrumBox.x0);
+    tip.style.left = Math.min($("spectrum-wrap").clientWidth - tip.offsetWidth - 4,
+                              Math.max(4, px + 14)) + "px";
+    tip.style.top = "8px";
+    drawSpectrum(band);
+  });
+  $("spectrum").addEventListener("mouseleave", hideSpectrumTip);
+  function hideSpectrumTip() { $("tip-spectrum").style.opacity = "0"; drawSpectrum(null); }
+
+  // ── sparklines ─────────────────────────────────────────────────────────────
+  function spark(id, values) {
+    const { ctx, w, h } = fit($(id));
+    ctx.clearRect(0, 0, w, h);
+    if (values.length < 2) return;
+    const max = Math.max(1, ...values);
+    const X = (i) => (i / (values.length - 1)) * w;
+    const Y = (v) => h - 2 - (v / max) * (h - 4);
+    ctx.strokeStyle = css("--muted");
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    values.forEach((v, i) => (i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v))));
+    ctx.stroke();
+    const last = values.length - 1;
+    ctx.fillStyle = css("--accent");
+    ctx.beginPath(); ctx.arc(X(last), Y(values[last]), 2.4, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ── table view ─────────────────────────────────────────────────────────────
+  function drawTable() {
+    if ($("tbl").hidden) return;
+    const rows = [];
+    for (let i = 0; i < count; i++) {
+      const c = rgb(i);
+      rows.push(`<tr><td>${i}</td><td>${c[0]}</td><td>${c[1]}</td><td>${c[2]}</td><td>${hex(c)}</td></tr>`);
+    }
+    $("tbl-body").innerHTML = rows.join("");
+  }
+
+  // ── render ─────────────────────────────────────────────────────────────────
+  let hover = null;
+  function render() {
+    drawWall(); drawStrip(); drawPlot(hover); drawTable(); drawSpectrum(null);
+    if (engine) syncControls(settingsCache) || syncFromEngine();
+    $("scale-mid").textContent = count ? Math.floor(count / 2) : "—";
+    $("scale-end").textContent = count ? count - 1 : "—";
+    if (!stats) return;
+
+    const fmt = (v, d = 0) => v.toLocaleString(undefined, { maximumFractionDigits: d });
+    for (const el of document.querySelectorAll(".tile .value")) el.classList.remove("pending");
+    $("k-pps").textContent = fmt(stats.packet_rate);
+    $("k-ups").textContent = fmt(stats.update_rate);
+    $("k-kbs").textContent = fmt(stats.byte_rate / 1024, 1);
+    $("k-cov").textContent = fmt(stats.coverage);
+    $("k-pps-sub").textContent = `${fmt(stats.packets)} total`;
+    $("k-kbs-sub").textContent = `${fmt(stats.bytes / 1024, 1)} KB total`;
+    $("k-ups-sub").textContent = stats.malformed
+      ? `${fmt(stats.malformed)} malformed` : "diff-only protocol";
+    const lit = Math.round((stats.coverage / 100) * count);
+    $("k-cov-sub").textContent = `${lit} of ${count} pixels`;
+
+    spark("spark-pps", history.map((h) => h.pps));
+    spark("spark-kbs", history.map((h) => h.bps / 1024));
+    spark("spark-ups", history.map((h) => h.pps));
+    spark("spark-cov", history.map((h) => h.pps));
+
+    const live = stats.state === "live";
+    $("status").dataset.state = stats.state;
+    $("status-text").textContent = live
+      ? "receiving"
+      : stats.since == null ? "waiting for packets" : `idle for ${fmt(stats.since, 1)}s`;
+    $("peer").textContent = stats.peer ? `from ${stats.peer}` : "no sender";
+  }
+
+  // ── interaction ────────────────────────────────────────────────────────────
+  $("plot").addEventListener("mousemove", (e) => {
+    if (!plotBox || !count) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const t = (x - plotBox.x0) / (plotBox.x1 - plotBox.x0);
+    if (t < -0.02 || t > 1.02) return hideTip();
+    hover = Math.max(0, Math.min(count - 1, Math.round(t * (count - 1))));
+    const c = rgb(hover);
+    const tip = $("tip");
+    tip.innerHTML =
+      `<div class="t-head">Pixel ${hover} · ${hex(c)}</div>` +
+      [["Red", c[0], "--series-r"], ["Green", c[1], "--series-g"], ["Blue", c[2], "--series-b"]]
+        .map(([n, v, k]) => `<div class="t-row"><span class="key"><span class="swatch" style="background:var(${k})"></span>${n}</span><b>${v}</b></div>`)
+        .join("");
+    tip.style.opacity = "1";
+    const wrapW = $("plot-wrap").clientWidth;
+    const px = plotBox.x0 + t * (plotBox.x1 - plotBox.x0);
+    tip.style.left = Math.min(wrapW - tip.offsetWidth - 4, Math.max(4, px + 14)) + "px";
+    tip.style.top = "8px";
+    drawPlot(hover);
+  });
+  $("plot").addEventListener("mouseleave", hideTip);
+  function hideTip() { hover = null; $("tip").style.opacity = "0"; drawPlot(null); }
+
+  $("tbl-toggle").addEventListener("click", (e) => {
+    const on = $("tbl").hidden;
+    $("tbl").hidden = !on;
+    e.currentTarget.setAttribute("aria-pressed", String(on));
+    drawTable();
+  });
+  for (const [id, mode] of [["v-wall", "wall"], ["v-index", "index"]]) {
+    $(id).addEventListener("click", () => {
+      stripView = mode;
+      $("v-wall").setAttribute("aria-pressed", String(mode === "wall"));
+      $("v-index").setAttribute("aria-pressed", String(mode === "index"));
+      $("wall").hidden = mode !== "wall";
+      render();
+    });
+  }
+  $("theme").addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    $("theme").textContent = next === "dark" ? "Light" : "Dark";
+    try { localStorage.setItem("ambviz-theme", next); } catch {}
+    render();
+  });
+  const saved = (() => { try { return localStorage.getItem("ambviz-theme"); } catch { return null; } })();
+  const forced = new URLSearchParams(location.search).get("theme");
+  const initial = (forced === "dark" || forced === "light") ? forced
+    : saved || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  document.documentElement.dataset.theme = initial;
+  $("theme").textContent = initial === "dark" ? "Light" : "Dark";
+  addEventListener("resize", render);
+
+  // ── controls ───────────────────────────────────────────────────────────────
+  const ALPHAS = [
+    ["red", "Red"], ["green", "Green"], ["blue", "Blue"],
+    ["common_mode", "Common mode"], ["pixel", "Pixel"], ["gain", "Gain"],
+    ["mel_gain", "Mel gain"], ["mel_smoothing", "Mel smoothing"],
+  ];
+  $("ctl-alphas").innerHTML = ALPHAS.map(([key, label]) => `
+    <div class="alpha">
+      <span>${label}</span>
+      <input type="number" data-alpha="${key}" data-slot="0" min="0.001" max="0.999" step="0.01" aria-label="${label} decay">
+      <input type="number" data-alpha="${key}" data-slot="1" min="0.001" max="0.999" step="0.01" aria-label="${label} rise">
+    </div>`).join("");
+
+  /** POST a patch; the server stays authoritative and we reflect its answer. */
+  async function send(patch) {
+    $("ctl-err").textContent = "";
+    try {
+      const r = await fetch(API + "/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        $("ctl-err").textContent = (body.error || `HTTP ${r.status}`).split("\n")[0];
+        syncControls(settingsCache, true);       // snap back to the real values
+        return null;
+      }
+      settingsCache = body.settings;
+      syncControls(settingsCache, true);
+      return body.settings;
+    } catch (err) {
+      $("ctl-err").textContent = "could not reach the API";
+      return null;
+    }
+  }
+
+  let settingsCache = null;
+
+  /** Fetch the full settings, which is the only source for the smoothing alphas
+   *  (they are not in the telemetry stream). Retries: a process that publishes
+   *  no settings answers 404, which is fine and simply leaves them blank. */
+  function loadSettings(attempt = 0) {
+    fetch(API + "/api/settings")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => syncControls(d.settings))
+      .catch((err) => {
+        if (err && err.message === "404") return;
+        if (attempt < 4) setTimeout(() => loadSettings(attempt + 1), 400);
+      });
+  }
+
+  /** Seed the engine-visible controls straight from the telemetry stream, so
+   *  they are usable on the first frame rather than after /api/settings lands.
+   *  The smoothing alphas are not in the stream and wait for that fetch. */
+  function syncFromEngine() {
+    if (!engine) return;
+    for (const b of $("ctl-effect").querySelectorAll("button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.effect === engine.effect));
+    }
+    if (editing !== "brightness") {
+      $("ctl-brightness").value = engine.brightness;
+      $("out-brightness").textContent = Number(engine.brightness).toFixed(2);
+    }
+    if (editing !== "bins") {
+      $("ctl-bins").value = engine.bins;
+      $("out-bins").textContent = engine.bins;
+    }
+    if (editing !== "minf") $("ctl-minf").value = engine.min_frequency;
+    if (editing !== "maxf") $("ctl-maxf").value = engine.max_frequency;
+    $("spectrum-range").textContent = `${engine.min_frequency}–${engine.max_frequency} Hz`;
+  }
+
+  /** Push server values into the widgets, skipping whatever is being dragged.
+   *  Returns true when it had settings to apply. */
+  function syncControls(cfg, force = false) {
+    if (!cfg) return false;
+    settingsCache = cfg;
+    for (const b of $("ctl-effect").querySelectorAll("button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.effect === cfg.effect.name));
+    }
+    if (force || editing !== "brightness") {
+      $("ctl-brightness").value = cfg.effect.brightness;
+      $("out-brightness").textContent = Number(cfg.effect.brightness).toFixed(2);
+    }
+    if (force || editing !== "bins") {
+      $("ctl-bins").value = cfg.dsp.fft_bins;
+      $("out-bins").textContent = cfg.dsp.fft_bins;
+    }
+    if (force || editing !== "minf") $("ctl-minf").value = cfg.dsp.min_frequency;
+    if (force || editing !== "maxf") $("ctl-maxf").value = cfg.dsp.max_frequency;
+    for (const input of $("ctl-alphas").querySelectorAll("input")) {
+      if (editing === `alpha-${input.dataset.alpha}-${input.dataset.slot}`) continue;
+      input.value = cfg.smoothing[input.dataset.alpha][Number(input.dataset.slot)];
+    }
+    $("spectrum-range").textContent = `${cfg.dsp.min_frequency}–${cfg.dsp.max_frequency} Hz`;
+    return true;
+  }
+
+  $("ctl-effect").addEventListener("click", (e) => {
+    const name = e.target.dataset && e.target.dataset.effect;
+    if (name) send({ effect: { name } });
+  });
+  bindLive($("ctl-brightness"), "brightness",
+    (v) => ($("out-brightness").textContent = Number(v).toFixed(2)),
+    (v) => ({ effect: { brightness: Number(v) } }));
+  bindLive($("ctl-bins"), "bins",
+    (v) => ($("out-bins").textContent = v),
+    (v) => ({ dsp: { fft_bins: Number(v) } }));
+  bindCommit($("ctl-minf"), "minf", (v) => ({ dsp: { min_frequency: Number(v) } }));
+  bindCommit($("ctl-maxf"), "maxf", (v) => ({ dsp: { max_frequency: Number(v) } }));
+  for (const input of $("ctl-alphas").querySelectorAll("input")) {
+    const key = input.dataset.alpha, slot = Number(input.dataset.slot);
+    bindCommit(input, `alpha-${key}-${slot}`, (v) => {
+      const pair = [...settingsCache.smoothing[key]];
+      pair[slot] = Number(v);
+      return { smoothing: { [key]: pair } };
+    });
+  }
+
+  /** Sliders: echo while dragging, POST on release, so we don't flood the API. */
+  function bindLive(el, name, echo, patch) {
+    el.addEventListener("input", () => { editing = name; echo(el.value); });
+    el.addEventListener("change", () => { editing = null; send(patch(el.value)); });
+  }
+  /** Number fields: POST on blur or Enter. */
+  function bindCommit(el, name, patch) {
+    el.addEventListener("focus", () => (editing = name));
+    el.addEventListener("blur", () => { editing = null; send(patch(el.value)); });
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
+  }
+
+  // ── transport ──────────────────────────────────────────────────────────────
+  // This file is a pure client. It renders nothing on its own and holds no
+  // state the package does not publish; everything arrives from the ambviz
+  // telemetry API, which may be on a different origin (hence CORS there).
+  const DEFAULT_API = "http://127.0.0.1:8080";
+  function apiBase() {
+    const q = new URLSearchParams(location.search).get("api");
+    if (q) return q.replace(/\/$/, "");
+    try {
+      const saved = localStorage.getItem("ambviz-api");
+      if (saved) return saved.replace(/\/$/, "");
+    } catch {}
+    // Served by something other than a file:// open? Assume same origin.
+    if (location.protocol.startsWith("http")) return location.origin;
+    return DEFAULT_API;
+  }
+  let API = apiBase();
+
+  const CONTRACT = 2;   // must match ambviz.settings.CONTRACT
+
+  /** One /api/state payload: providers are namespaced, and only the ones this
+   *  process actually has are present. */
+  function apply(msg) {
+    if (msg.strip) {
+      const bin = atob(msg.strip.px);
+      if (pixels.length !== bin.length) pixels = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) pixels[i] = bin.charCodeAt(i);
+      count = msg.strip.pixels;
+      stats = msg.strip.stats;
+      history = msg.strip.history || [];
+    }
+    engine = msg.engine || null;
+    // The payload's own keys name the providers, so panel visibility never has
+    // to wait on a second request.
+    showPanels(Object.keys(msg));
+    render();
+  }
+
+  /** Show only the panels whose provider this process actually publishes. */
+  function showPanels(names) {
+    const have = new Set(names);
+    if (!have.size) return;
+    for (const card of document.querySelectorAll("[data-provider]")) {
+      card.hidden = !have.has(card.dataset.provider);
+    }
+    // An engine with no command queue can be watched but not driven.
+    if (have.has("engine") && health && health.controllable === false) {
+      $("card-controls").hidden = true;
+    }
+    banner(have);
+  }
+
+  function banner(have) {
+    const notes = [];
+    if (health && health.contract !== CONTRACT) {
+      notes.push(`This dashboard speaks contract v${CONTRACT} but ambviz ` +
+                 `${health.version} speaks v${health.contract}. Some panels may be wrong ` +
+                 `or empty — update whichever is older.`);
+    }
+    if (!have.has("engine")) {
+      notes.push("No engine attached, so there is no spectrum or controls. " +
+                 "Run `ambviz run --api` (or `--virtual`) to get them.");
+    }
+    $("banner").hidden = !notes.length;
+    $("banner-text").textContent = notes.join(" ");
+  }
+
+  /** Health carries the contract version and whether writes are accepted. */
+  function applyHealth(h) {
+    health = h;
+    $("dl-toml").href = API + "/api/settings.toml";
+    showPanels(h.providers || []);
+  }
+  let stream = null;
+  function connect() {
+    if (stream) { stream.close(); stream = null; }
+    $("api-url").value = API;
+    // Health first: it decides which panels exist at all.
+    fetch(API + "/api/health")
+      .then((r) => r.json())
+      .then((h) => { setLink(true); applyHealth(h); })
+      .catch(() => setLink(false));
+    // Independent of health: the smoothing alphas live only here, and gating
+    // this behind a second round trip left them blank on first paint.
+    loadSettings();
+    // Seed immediately; SSE only pushes on the next change, which may be a
+    // second away if nothing is sending.
+    fetch(API + "/api/state")
+      .then((r) => r.json())
+      .then((m) => { setLink(true); apply(m); })
+      .catch(() => setLink(false));
+    stream = new EventSource(API + "/api/stream");
+    stream.onopen = () => setLink(true);
+    stream.onmessage = (e) => { setLink(true); apply(JSON.parse(e.data)); };
+    stream.onerror = () => {
+      setLink(false);
+      stream.close();
+      stream = null;
+      setTimeout(connect, 1500);
+    };
+  }
+
+  function setLink(ok) {
+    if (linked === ok) return;
+    linked = ok;
+    if (!ok) { stats = null; count = 0; pixels = new Uint8Array(0); engine = null; }
+    $("api-state").textContent = ok ? "connected" : "unreachable";
+    $("api-state").dataset.ok = String(ok);
+    if (!ok) {
+      $("banner").hidden = false;
+      $("banner-text").textContent =
+        `No ambviz API at ${API}. Start one with \`ambviz run --virtual\`, or point this ` +
+        `dashboard elsewhere with the API field above.`;
+      $("status").dataset.state = "idle";
+      $("status-text").textContent = "no API connection";
+      $("peer").textContent = "no sender";
+      for (const el of document.querySelectorAll(".tile .value")) el.classList.add("pending");
+      for (const id of ["k-pps", "k-ups", "k-kbs", "k-cov"]) $(id).textContent = "—";
+      render();
+    }
+  }
+
+  $("api-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    API = $("api-url").value.trim().replace(/\/$/, "") || DEFAULT_API;
+    try { localStorage.setItem("ambviz-api", API); } catch {}
+    connect();
+  });
+
+  connect();
+  render();
+})();
+</script>
+</body>
+</html>

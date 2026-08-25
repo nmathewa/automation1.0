@@ -1,0 +1,57 @@
+# ambviz settings.
+#
+#   ambviz run --config config.example.toml
+#
+# Every key here is optional -- anything omitted keeps its default. Copy this
+# file per rig (one for the bench simulator, one per physical strip) instead of
+# duplicating Python modules the way config.py / config2.py used to.
+#
+# Precedence: these values  <  AMBVIZ_* environment  <  command-line flags.
+
+display_fps = true
+
+[output]
+device = "udp"            # "udp" for a real strip or the simulator, "none" for headless
+host = "127.0.0.1"        # 192.168.1.35 for the ESP8266; 127.0.0.1 for the simulator
+port = 7777               # must match localPort in the ESP firmware
+pixels = 60               # LEDs actually driven; may be fewer than the strip's length
+max_pixels_per_packet = 126
+gamma_correction = false  # the firmware in this repo does NOT gamma-correct
+gamma_table = "gamma_table.npy"   # relative names resolve to the table shipped in the package
+full_refresh_interval = 2.0   # seconds; bounds how long a dropped packet can leave a pixel stale
+
+[audio]
+source = "mic"            # "mic" | "synth" (generated, no hardware) | "wav"
+input_device = ""         # PortAudio index; leave empty for the system default
+wav_path = ""
+rate = 44100
+fps = 60
+rolling_history = 2       # audio frames in the FFT window
+min_volume = 1e-7         # blank the strip below this peak amplitude
+
+[dsp]
+min_frequency = 200.0
+max_frequency = 12000.0   # must stay below rate / 2
+fft_bins = 24             # Mel bands
+mel_exponent = 2.0        # higher exaggerates peaks
+gain_sigma = 1.0
+
+[effect]
+name = "spectrum"         # "spectrum" | "energy" | "scroll"
+mirror = true
+brightness = 1.0
+scroll_decay = 0.98
+scroll_sigma = 0.2
+energy_scale = 0.9
+energy_sigma = 4.0
+
+# (alpha_decay, alpha_rise) per exponential filter. Small = smoother.
+[smoothing]
+red = [0.20, 0.99]
+green = [0.05, 0.30]
+blue = [0.10, 0.50]
+common_mode = [0.99, 0.01]
+pixel = [0.10, 0.99]
+gain = [0.001, 0.99]
+mel_gain = [0.01, 0.99]
+mel_smoothing = [0.50, 0.99]
