@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ambviz"
+version = "0.1.0"
+description = "Audio-reactive LED strip driver for WS2812 over UDP, with a virtual strip and read-only telemetry API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.24", "scipy>=1.11"]
+
+[project.optional-dependencies]
+mic = ["pyaudio>=0.2.13"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ambviz = "ambviz.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ambviz = ["data/*.npy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
