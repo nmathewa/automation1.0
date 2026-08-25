@@ -6,12 +6,19 @@ supported: :mod:`sounddevice` is preferred because it binds the PortAudio
 compile against ``portaudio.h`` and fails on any machine without the dev
 package. Either works; whichever is importable is used.
 
+``loopback`` captures what the machine is *playing* rather than what a
+microphone hears -- clean stereo straight from the mixer, with no room noise and
+no dependence on hardware at all. It reads a PulseAudio/PipeWire monitor source
+through ``parec``.
+
 ``synth`` and ``wav`` need neither, which is what makes the whole pipeline
 testable with no hardware and no microphone attached.
 """
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import time
 import wave
 from typing import Iterator
@@ -140,6 +147,150 @@ def MicSource(settings: Settings) -> Source:  # noqa: N802 - used as a class wou
     return backend[1](settings)
 
 
+def _pactl(*args: str) -> str:
+    try:
+        return subprocess.run(["pactl", *args], capture_output=True, text=True,
+                              check=True, timeout=5).stdout
+    except FileNotFoundError:
+        raise RuntimeError(
+            "pactl not found. Loopback capture needs PulseAudio or PipeWire; "
+            "use --source mic for a hardware input instead."
+        ) from None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"pactl {' '.join(args)} failed: {exc}") from None
+
+
+def monitor_sources() -> list[str]:
+    """Every ``.monitor`` source, one per output device."""
+    return [line.split()[1] for line in _pactl("list", "short", "sources").splitlines()
+            if len(line.split()) > 1 and line.split()[1].endswith(".monitor")]
+
+
+def resolve_monitor(target: str | int | None = None) -> str:
+    """Pick the monitor source to capture.
+
+    ``None`` follows the default output, which is what "visualize whatever is
+    playing" means. A string matches a monitor, a sink, or the name of a running
+    application -- in which case the sink that application is playing to is used.
+    """
+    monitors = monitor_sources()
+    if not monitors:
+        raise RuntimeError("no monitor sources; is a sound server running?")
+
+    if target is None or target == "":
+        return _pactl("get-default-sink").strip() + ".monitor"
+
+    wanted = str(target).strip().lower()
+
+    for name in monitors:                                    # a monitor by name
+        if wanted in name.lower():
+            return name
+
+    for line in _pactl("list", "short", "sinks").splitlines():  # a sink by name
+        parts = line.split()
+        if len(parts) > 1 and wanted in parts[1].lower():
+            return parts[1] + ".monitor"
+
+    sink = _sink_for_application(wanted)                      # an app by name
+    if sink:
+        return sink + ".monitor"
+
+    raise ValueError(
+        f"nothing matching {target!r} to capture. Monitors available:\n  "
+        + "\n  ".join(monitors)
+    )
+
+
+def _sink_for_application(wanted: str) -> str | None:
+    """The sink a named application is playing to, if it is playing."""
+    inputs = _pactl("list", "sink-inputs")
+    sink_index, matched = None, False
+    for line in inputs.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Sink Input #"):
+            sink_index, matched = None, False
+        elif stripped.startswith("Sink:"):
+            sink_index = stripped.split(":", 1)[1].strip()
+        elif "application.name" in stripped or "media.name" in stripped:
+            if wanted in stripped.lower():
+                matched = True
+        if matched and sink_index is not None:
+            for line2 in _pactl("list", "short", "sinks").splitlines():
+                parts = line2.split()
+                if parts and parts[0] == sink_index:
+                    return parts[1]
+    return None
+
+
+class LoopbackSource(Source):
+    """Capture the machine's own playback from a monitor source.
+
+    Independent of any microphone: it taps the mixer, so it hears exactly what
+    is being played, in stereo, with none of the room noise, hum or automatic
+    gain a microphone introduces.
+    """
+
+    def __init__(self, settings: Settings, target: str | int | None = None):
+        super().__init__(settings)
+        if shutil.which("parec") is None:
+            raise RuntimeError(
+                "parec not found. Loopback capture needs PulseAudio or PipeWire "
+                "(Debian/Ubuntu: apt install pulseaudio-utils). "
+                "Use --source mic for a hardware input instead."
+            )
+        self.device = resolve_monitor(target if target is not None else settings.audio.input_device)
+        self._proc = subprocess.Popen(
+            [
+                "parec",
+                f"--device={self.device}",
+                "--format=s16le",
+                f"--rate={settings.audio.rate}",
+                "--channels=1",
+                # Keep the server-side buffer short so the lights track the
+                # audio rather than trailing it.
+                "--latency-msec=20",
+                "--raw",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def frames(self) -> Iterator[np.ndarray]:
+        want = self.frame_size * 2          # int16
+        stream = self._proc.stdout
+        assert stream is not None
+        # A monitor of an idle sink emits silence far faster than real time, so
+        # an unpaced loop spins at thousands of frames a second and makes the
+        # reported frame rate meaningless. Audio is real time by definition;
+        # capping at the nominal rate costs nothing when data is genuinely
+        # flowing and stops the spin when it is not.
+        interval = self.frame_size / self.settings.audio.rate
+        next_due = time.monotonic()
+        while True:
+            raw = stream.read(want)
+            if not raw or len(raw) < want:
+                if self._proc.poll() is not None:
+                    raise RuntimeError(
+                        f"parec stopped while reading {self.device!r}; "
+                        f"the source may have gone away"
+                    )
+                continue
+            yield np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+
+            next_due += interval
+            if (delay := next_due - time.monotonic()) > 0:
+                time.sleep(delay)
+            else:
+                next_due = time.monotonic()
+
+    def close(self) -> None:
+        self._proc.terminate()
+        try:
+            self._proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+
+
 class SynthSource(Source):
     """Generated test signal: a four-on-the-floor kick, a bass note, a sweeping
     mid tone and hats. Deterministic, paced to real time.
@@ -223,7 +374,8 @@ class WavSource(Source):
 
 
 def make_source(settings: Settings) -> Source:
-    sources = {"mic": MicSource, "synth": SynthSource, "wav": WavSource}
+    sources = {"mic": MicSource, "loopback": LoopbackSource,
+               "synth": SynthSource, "wav": WavSource}
     try:
         return sources[settings.audio.source](settings)
     except KeyError:

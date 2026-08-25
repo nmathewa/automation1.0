@@ -84,11 +84,21 @@ class Audio:
     """Where samples come from."""
 
     source: str = "mic"
-    """``mic`` (live input), ``synth`` (generated test signal, no hardware needed),
-    or ``wav`` (loop a .wav file via the stdlib ``wave`` module)."""
+    """Where audio comes from:
+
+    ``mic``       a hardware input, via PortAudio
+    ``loopback``  what the machine is playing, tapped from the mixer -- no
+                  microphone involved, and far cleaner than one
+    ``synth``     a generated test signal, needing no hardware at all
+    ``wav``       a .wav file on a loop
+    """
 
     input_device: int | str | None = None
-    """PortAudio input device: an index, or part of a device name.
+    """What to capture from.
+
+    With ``source = "mic"``: a PortAudio device index, or part of a device name.
+    With ``source = "loopback"``: part of a monitor, an output device, or the
+    name of a running application -- empty follows the default output.
 
     Names are matched case-insensitively, which survives the reordering that
     indices are prone to -- ``"pulse"`` keeps working, ``13`` may not.
@@ -254,8 +264,11 @@ class Settings:
             problems.append("output.pixels must be >= 1")
         if self.output.device not in ("udp", "none"):
             problems.append(f"output.device must be 'udp' or 'none', got {self.output.device!r}")
-        if self.audio.source not in ("mic", "synth", "wav"):
-            problems.append(f"audio.source must be 'mic', 'synth' or 'wav', got {self.audio.source!r}")
+        if self.audio.source not in ("mic", "loopback", "synth", "wav"):
+            problems.append(
+                f"audio.source must be 'mic', 'loopback', 'synth' or 'wav', "
+                f"got {self.audio.source!r}"
+            )
         if self.audio.source == "wav" and not self.audio.wav_path:
             problems.append("audio.source is 'wav' but audio.wav_path is empty")
         if self.audio.synth_bpm <= 0:

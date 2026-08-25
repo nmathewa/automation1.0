@@ -40,11 +40,13 @@ def _add_settings_flags(p: argparse.ArgumentParser) -> None:
     out.add_argument("--brightness", type=float, metavar="0-1")
 
     aud = p.add_argument_group("audio")
-    aud.add_argument("--source", choices=["mic", "synth", "wav"],
-                     help="'synth' generates a test signal; needs no microphone")
+    aud.add_argument("--source", choices=["mic", "loopback", "synth", "wav"],
+                     help="'loopback' captures what the machine is playing; "
+                          "'synth' generates a test signal and needs no audio at all")
     aud.add_argument("--wav", metavar="PATH", help="16-bit PCM .wav to loop")
     aud.add_argument("--input-device", metavar="NAME|N",
-                     help="input device index, or part of its name (e.g. 'pulse')")
+                     help="what to capture: a mic device index or name; or with "
+                          "--source loopback, an output device or application name")
     aud.add_argument("--rate", type=int, help="sample rate in Hz")
     aud.add_argument("--fps", type=int, help="target frames per second")
 
@@ -226,6 +228,23 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monitors(args: argparse.Namespace) -> int:
+    """List what loopback capture can tap."""
+    from ambviz.sources import monitor_sources, resolve_monitor
+
+    try:
+        monitors = monitor_sources()
+        default = resolve_monitor(None)
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not monitors:
+        print("no playback sources found")
+    for name in monitors:
+        print(f"  {name}{'  <- default output' if name == default else ''}")
+    return 0
+
+
 def cmd_devices(args: argparse.Namespace) -> int:
     from ambviz.sources import list_input_devices
 
@@ -251,6 +270,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"ambviz {__version__}")
     subs = parser.add_subparsers(dest="command", required=True)
+
+    subs.add_parser("monitors", help="list capturable playback sources").set_defaults(
+        func=cmd_monitors)
 
     run = subs.add_parser("run", help="drive a strip from audio")
     _add_settings_flags(run)
