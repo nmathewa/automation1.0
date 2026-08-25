@@ -13,7 +13,8 @@ from pyqtgraph.Qt import QtWidgets, QtCore
 import struct
 #%%
 
-gamma_table = '/Users/nalex2023/main/automation1.0/amb_display/audio_based/python/gamma_table.npy'
+from pathlib import Path
+gamma_table = Path(__file__).resolve().parent / 'gamma_table.npy'
 
 CHUNK = 1024            # Number of audio samples per frame
 RATE = 48000            # Sample rate in Hz

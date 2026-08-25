@@ -2,7 +2,7 @@ from __future__ import print_function
 from __future__ import division
 import time
 import numpy as np
-from scipy.ndimage.filters import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d
 import config2 as config
 import microphone2 as microphone
 import dsp2 as dsp
