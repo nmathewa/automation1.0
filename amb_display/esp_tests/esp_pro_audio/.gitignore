@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# WiFi credentials -- copy include/secrets.h.example to include/secrets.h
+include/secrets.h
+.venv/
