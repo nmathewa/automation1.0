@@ -156,8 +156,14 @@ class RateLimiter:
     """
 
     def __init__(self, per_second: float, value: float = 0.0,
-                 deadband: float = 0.0, wrap: bool = False):
+                 deadband: float = 0.0, wrap: bool = False,
+                 fall_per_second: float | None = None):
         self.per_second = per_second
+        # Perceived dynamics are asymmetric. A drum hit should arrive at once
+        # and fade slowly; capping both directions equally makes a loud moment
+        # take as long to appear as it takes to die away, which reads as
+        # sluggish however well tuned the number is.
+        self.fall_per_second = per_second if fall_per_second is None else fall_per_second
         self.deadband = deadband
         self.wrap = wrap
         self.value = value
@@ -170,7 +176,8 @@ class RateLimiter:
             delta = (delta + 0.5) % 1.0 - 0.5
         if abs(delta) <= self.deadband:
             return self.value
-        step = self.per_second * max(dt, 0.0)
+        rate = self.per_second if delta > 0 else self.fall_per_second
+        step = rate * max(dt, 0.0)
         self.value += float(np.clip(delta, -step, step))
         if self.wrap:
             self.value %= 1.0

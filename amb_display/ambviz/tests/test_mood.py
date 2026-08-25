@@ -220,3 +220,51 @@ def test_brightness_never_reaches_zero():
     for _ in range(30):
         out = v.process(np.full((v.samples_per_frame, 2), 30.0))
     assert out.max() > 0.0, "quiet audio should still show the floor"
+
+
+# ── dynamics ─────────────────────────────────────────────────────────────────
+def test_rate_limiter_rises_faster_than_it_falls():
+    """Symmetric limiting was what made the effect feel sluggish: a hit took as
+    long to appear as it took to decay."""
+    from ambviz.dsp import RateLimiter
+
+    lim = RateLimiter(10.0, value=0.0, fall_per_second=0.5)
+    lim.update(1.0, 0.1)
+    assert lim.value == pytest.approx(1.0)
+    lim.update(0.0, 0.1)
+    assert lim.value == pytest.approx(0.95)
+
+
+def test_default_attack_lands_within_a_fifth_of_a_second():
+    from ambviz.dsp import RateLimiter
+
+    cfg = Settings.load().mood
+    lim = RateLimiter(1 / cfg.attack, value=0.0, fall_per_second=1 / cfg.release)
+    steps = 0
+    while lim.value < 0.95 and steps < 100_000:
+        lim.update(1.0, 1 / 60)
+        steps += 1
+    assert steps / 60 < 0.2, f"a hit took {steps / 60:.2f}s to land"
+    assert cfg.release > cfg.attack * 5
+
+
+def test_onsets_reach_the_output():
+    """The rewrite as a cross-fade dropped beat response entirely; this is the
+    regression guard."""
+    v = cinema()
+    n = v.samples_per_frame
+    rng = np.random.default_rng(0)
+    peaks = []
+    for i in range(240):
+        t = (np.arange(n) + i * n) / SR
+        env = np.exp(-((t * 3) % 1.0) * 12)              # a hit three times a second
+        hit = np.sin(2 * np.pi * 65 * t) * env
+        peaks.append(float(v.process(np.stack([hit, hit * 0.9], axis=1) * 9000).max()))
+    tail = np.array(peaks[120:])
+    assert tail.max() - tail.min() > 30, \
+        f"output barely moved on a beat: {tail.min():.0f}-{tail.max():.0f}"
+
+
+def test_a_longer_attack_than_release_is_warned_about():
+    s = Settings.load(overrides={"mood": {"attack": 3.0, "release": 1.0}})
+    assert any("wrong way round" in w for w in s.warnings)

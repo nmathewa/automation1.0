@@ -31,6 +31,9 @@ class Mood:
     level: float = 0.0
     """Brightness before any floor is applied, 0-1."""
 
+    accent: float = 0.0
+    """A transient brightening on a hit, 0-1. Fast to arrive, slow to leave."""
+
     detail: float = 0.0
     """How far to cross-fade from a plain wash toward a spectral display, 0-1.
 
@@ -64,6 +67,7 @@ def blend(moods: list[Mood]) -> Mood:
         hue=hue,
         saturation=sum(m.saturation * m.weight for m in live) / total,
         level=sum(m.level * m.weight for m in live) / total,
+        accent=max(m.accent for m in live),
         detail=sum(m.detail * m.weight for m in live) / total,
         weight=max(m.weight for m in live),
     )
@@ -103,7 +107,13 @@ class AudioMood:
         self._last_target = 0.5
         self._range = AdaptiveRange(seconds=cfg.range_seconds, fps=float(settings.audio.fps))
         self._hue = RateLimiter(cfg.hue_rate, value=0.5, deadband=cfg.deadband, wrap=True)
-        self._level = RateLimiter(1.0 / max(cfg.response_seconds, 1e-3), value=0.0)
+        # Asymmetric on purpose: reach a peak in `attack` seconds, fall back
+        # over `release`. Symmetric limiting is what made this feel sluggish --
+        # a drum hit took as long to appear as it took to decay.
+        self._level = RateLimiter(
+            1.0 / max(cfg.attack, 1e-3), value=0.0,
+            fall_per_second=1.0 / max(cfg.release, 1e-3),
+        )
         self._last_t: float | None = None
 
     def update(self, features: Features) -> Mood:
@@ -123,7 +133,17 @@ class AudioMood:
         target = self._range.update(smoothed)
         self._last_target = target
         hue = self._hue.update(target, dt)
-        level = self._level.update(float(np.clip(features.slow, 0.0, 1.0)), dt)
+        # The onset detector already fires on drums, so it is the fast term.
+        # Novelty and out-of-vocabulary confidence add the surprises: a sound
+        # the classifier cannot name is usually a deliberate production accent.
+        scene = features.scene
+        surprise = max(scene.novelty, scene.unusual) if scene.available else 0.0
+        accent = float(np.clip(max(features.onset, surprise) * cfg.accent, 0.0, 1.0))
+
+        # Feed the accent into the level itself so the fast attack applies to
+        # hits, not only to slow swells.
+        drive = float(np.clip(max(features.slow, accent), 0.0, 1.0))
+        level = self._level.update(drive, dt)
 
         # Scene energy decides how energetic to be; dialogue pulls it back. The
         # point is not to be subtle always -- a fight scene should look close to
@@ -134,6 +154,7 @@ class AudioMood:
             hue=hue,
             saturation=0.85,
             level=max(level, 0.0),
+            accent=accent,
             detail=float(np.clip(detail, 0.0, 1.0)),
             weight=cfg.audio_weight,
         )

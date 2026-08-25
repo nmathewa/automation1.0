@@ -191,6 +191,21 @@ class Mood:
     response_seconds: float = 8.0
     """Roughly how long a full colour traverse takes. The subtlety knob."""
 
+    attack: float = 0.12
+    """Seconds for brightness to reach a new peak. Short: a drum hit should land."""
+
+    release: float = 2.0
+    """Seconds for brightness to fall back. Long, so it breathes rather than
+    flickers. The gap between this and attack is what makes movement read as
+    dynamic rather than merely fast."""
+
+    accent: float = 0.5
+    """How much a hit brightens the strip, 0-1.
+
+    Driven by the onset detector -- which fires on drums -- and by the
+    classifier's novelty and out-of-vocabulary scores, since a production effect
+    it cannot name is exactly the surprise worth punctuating."""
+
     hue_rate: float = 0.125
     """Maximum hue movement per second, in turns. 0.125 crosses the circle in
     8 s. Capping the *rate* is what makes it read as calm rather than merely
@@ -381,7 +396,15 @@ class Settings:
             problems.append("mood.response_seconds must be positive")
         if m.hue_rate <= 0:
             problems.append("mood.hue_rate must be positive")
-        for name in ("deadband", "floor", "dialogue_damping", "detail", "audio_weight"):
+        if m.attack <= 0 or m.release <= 0:
+            problems.append("mood.attack and mood.release must be positive")
+        if m.attack > m.release:
+            warnings.append(
+                "mood.attack is longer than mood.release, so the strip fades "
+                "faster than it lights; that is usually the wrong way round"
+            )
+        for name in ("deadband", "floor", "dialogue_damping", "detail",
+                     "audio_weight", "accent"):
             if not 0.0 <= getattr(m, name) <= 1.0:
                 problems.append(f"mood.{name} must be between 0.0 and 1.0")
         if not 0.0 <= m.scene_weight <= 1.0:

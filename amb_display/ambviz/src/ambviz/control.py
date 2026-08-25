@@ -44,6 +44,9 @@ CONTROLLABLE: frozenset[str] = frozenset({
     # the slow layer
     "mood.response_seconds",
     "mood.hue_rate",
+    "mood.attack",
+    "mood.release",
+    "mood.accent",
     "mood.deadband",
     "mood.floor",
     "mood.dialogue_damping",

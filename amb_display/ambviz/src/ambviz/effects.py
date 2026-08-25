@@ -347,6 +347,13 @@ class CinemaEffect(Effect):
         mix = float(self._mix.update(m.detail))
         value = np.clip(wash_value * (1.0 - mix) + spectral_value * mix, 0.0, 1.0)
         value = np.maximum(value, cfg.floor * (1.0 - mix))
+
+        # The accent is added after the cross-fade rather than folded into the
+        # level, so a hit punches through whatever the slow layer is doing --
+        # the whole point being that it should not have to wait for it.
+        if m.accent > 0.0:
+            punch = 0.5 + 0.5 * np.cos((x - 0.5) * np.pi)   # strongest at centre
+            value = np.clip(value + m.accent * punch * 0.6, 0.0, 1.0)
         hue = np.where(mix > 0.5, spectral_hue, wash_hue)
         saturation = m.saturation * (1.0 - 0.15 * mix)
         return _hsv_to_rgb(hue, saturation, value) * 255.0
