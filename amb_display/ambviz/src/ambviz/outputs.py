@@ -47,7 +47,12 @@ class Output:
             raise ValueError(
                 f"expected pixel array of shape (3, {self.n_pixels}), got {pixels.shape}"
             )
-        p = np.clip(pixels, 0, 255).astype(int)
+        # Round rather than truncate. ``astype`` truncates toward zero, which
+        # costs up to a full step everywhere and turns a pixel at 0.9 fully
+        # dark. Invisible at the top of the range; at the luminance 1-3 an
+        # effect sits at during a quiet passage, a step is a third of the
+        # brightness.
+        p = np.rint(np.clip(pixels, 0, 255)).astype(int)
         if self._gamma is not None:
             p = self._gamma[p]
 
