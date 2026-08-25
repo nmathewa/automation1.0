@@ -11,6 +11,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from ambviz.dsp import EPS, ExpFilter, interpolate
+from ambviz.director import DEFAULT, score_candidates
 from ambviz.features import Features
 from ambviz.mood import AudioMood, blend
 from ambviz.settings import Settings
@@ -371,6 +372,79 @@ EFFECTS: dict[str, type[Effect]] = {
     "solid": SolidEffect,
     "cinema": CinemaEffect,
 }
+
+
+class Director(Effect):
+    """Runs the best-suited animation, fading when it changes."""
+
+    clone_across_nodes = False
+
+    def __init__(self, settings: Settings, width: int):
+        super().__init__(settings, width)
+        self._cache: dict[str, Effect] = {}
+        self.current = DEFAULT
+        self.previous: str | None = None
+        self.fade = 1.0
+        """1.0 once the current animation is fully faded in."""
+        self.last_switch = 0.0
+        self.switches = 0
+        self.scores: dict[str, float] = {}
+
+    def _effect(self, name: str) -> Effect:
+        # Built on first use and kept: recreating one per switch would discard
+        # its state and reintroduce the seam the fade exists to hide.
+        if name not in self._cache:
+            self._cache[name] = EFFECTS[name](self.settings, self.width)
+        return self._cache[name]
+
+    def choose(self, f: Features) -> str:
+        """The animation that should be running, given hysteresis and dwell."""
+        cfg = self.settings.mood
+        self.scores = score_candidates(f)
+        best = max(self.scores, key=lambda k: self.scores[k])
+        if best == self.current:
+            return self.current
+        if f.t - self.last_switch < cfg.switch_dwell:
+            return self.current
+        if self.scores[best] < self.scores.get(self.current, 0.0) + cfg.switch_margin:
+            return self.current
+        return best
+
+    def render(self, f: Features) -> np.ndarray:
+        cfg = self.settings.mood
+        want = self.choose(f)
+        if want != self.current:
+            self.previous, self.current = self.current, want
+            self.fade = 0.0
+            self.last_switch = f.t
+            self.switches += 1
+
+        out = self._effect(self.current).render(f)
+        if self.fade < 1.0 and self.previous is not None:
+            # Both keep running during the fade, so neither restarts mid-scene.
+            old = self._effect(self.previous).render(f)
+            out = old * (1.0 - self.fade) + out * self.fade
+            self.fade = min(1.0, self.fade + 1.0 / max(cfg.crossfade * self.settings.audio.fps, 1.0))
+            if self.fade >= 1.0:
+                self.previous = None
+        return out
+
+    @property
+    def mood(self):
+        """Whatever the running animation exposes, so telemetry keeps working."""
+        return getattr(self._effect(self.current), "mood", None)
+
+    def state(self) -> dict:
+        return {
+            "current": self.current,
+            "previous": self.previous,
+            "fade": round(self.fade, 3),
+            "switches": self.switches,
+            "scores": {k: round(v, 3) for k, v in sorted(self.scores.items())},
+        }
+
+
+EFFECTS["auto"] = Director
 
 #: Which effects react to beats rather than only to level.
 BEAT_DRIVEN = frozenset({"pixelwave"})

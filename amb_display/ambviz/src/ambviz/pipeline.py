@@ -173,6 +173,8 @@ class Visualizer:
             "energy": round(float(self.features.energy), 3),
             "scene": self.features.scene.to_dict(),
             "mood": self._mood_snapshot(),
+            "director": (self.effect.state()
+                         if hasattr(self.effect, "state") else None),
             "mel": [round(float(v), 4) for v in self.mel],
             "onset": round(float(self.features.onset), 3),
             "beat": self.features.beat,
@@ -271,11 +273,11 @@ class Visualizer:
         # A fight scene is loud, wide and full of transients; a dialogue scene is
         # none of those. Averaging the three normalised components is enough to
         # tell them apart without recognising anything.
-        rate = float(self.onset_rate.update(1.0 if beat else 0.0))
+        rate_norm = self.onset_range.update(float(self.onset_rate.update(1.0 if beat else 0.0)))
         energy = float(np.clip(
             0.5 * self.level_range.update(slow)
             + 0.3 * (1.0 - narrow)
-            + 0.2 * self.onset_range.update(rate),
+            + 0.2 * rate_norm,
             0.0, 1.0))
         if scene.available:
             # What is playing says more about how energetic to be than the
@@ -293,6 +295,7 @@ class Visualizer:
             flux=flux, t=elapsed, silent=False,
             centroid=centroid, centroid_hz=centroid_hz, dialogue=dialogue, slow=slow,
             spread=spread, energy=energy, scene=scene,
+            onset_rate=rate_norm, brightness=float(1.0 - narrow),
         )
         return self._to_strip(self.effect.render(self.features))
 
@@ -309,6 +312,7 @@ class Visualizer:
         out = {
             "hue": round(float(mood.hue), 4),
             "level": round(float(mood.level), 4),
+            "accent": round(float(mood.accent), 4),
             "detail": round(float(mood.detail), 4),
         }
         if source is not None:

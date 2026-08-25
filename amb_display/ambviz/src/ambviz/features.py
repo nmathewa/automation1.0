@@ -81,6 +81,12 @@ class Features:
     scene: Scene = field(default_factory=Scene)
     """What a classifier thinks the audio *is*, when one is running."""
 
+    onset_rate: float = 0.0
+    """Onset density, 0-1 -- how beat-driven this passage is."""
+
+    brightness: float = 0.0
+    """Spectral spread rescaled to 0-1: narrow content near 0, wide near 1."""
+
     energy: float = 0.0
     """How much is going on, 0-1, adaptively rescaled across the film.
 
@@ -122,6 +128,15 @@ class OnsetDetector:
     decay: float = 0.12
     """Seconds for the onset strength to fall back to zero after a hit."""
 
+    min_flux: float = 0.06
+    """Minimum flux as a fraction of current spectral energy.
+
+    The adaptive threshold alone is purely relative, so on sustained material --
+    a held chord, a drone -- the running floor collapses and ordinary numerical
+    wobble clears it. That fired onsets as fast on a swell as on a drum track.
+    An absolute floor, scaled by the spectrum's own energy so it survives gain
+    changes, is what distinguishes a hit from a steady tone."""
+
     _prev: np.ndarray | None = field(default=None, repr=False)
     _floor: ExpFilter = field(
         default_factory=lambda: ExpFilter(1e-3, alpha_decay=0.02, alpha_rise=0.08),
@@ -139,9 +154,16 @@ class OnsetDetector:
         flux = float(np.sum(np.maximum(mel - self._prev, 0.0)))
         self._prev = np.copy(mel)
 
+        # Relative to the spectrum's own energy: a hit adds a large fraction of
+        # what is already there, a steady tone does not.
+        energy = float(np.sum(mel))
+        relative = flux / energy if energy > 1e-9 else 0.0
+
         floor = float(self._floor.update(flux))
         beat = False
-        if flux > floor * self.sensitivity and t - self._last_beat >= self.refractory:
+        if (flux > floor * self.sensitivity
+                and relative >= self.min_flux
+                and t - self._last_beat >= self.refractory):
             beat = True
             self._last_beat = t
             # Scale with how far past the threshold it landed, so a soft hit

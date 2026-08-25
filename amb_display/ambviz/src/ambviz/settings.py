@@ -199,12 +199,12 @@ class Mood:
     flickers. The gap between this and attack is what makes movement read as
     dynamic rather than merely fast."""
 
-    accent: float = 0.5
+    accent: float = 0.18
     """How much a hit brightens the strip, 0-1.
 
-    Driven by the onset detector -- which fires on drums -- and by the
-    classifier's novelty and out-of-vocabulary scores, since a production effect
-    it cannot name is exactly the surprise worth punctuating."""
+    Deliberately small. Punctuation, not rhythm -- when a scene genuinely wants
+    rhythm the director switches to an effect built for it, rather than making
+    the wash beat. An earlier default of 0.5 made every scene throb."""
 
     hue_rate: float = 0.125
     """Maximum hue movement per second, in turns. 0.125 crosses the circle in
@@ -243,6 +243,21 @@ class Mood:
     The DSP features describe how audio behaves; the model describes what it is.
     The model is the better judge of "is this speech", but it works on ~1 s
     windows, so it is blended rather than trusted outright. 0 ignores it."""
+
+    switch_dwell: float = 8.0
+    """Minimum seconds on one animation before another may take over.
+
+    Without it the selector flaps at every threshold crossing, which looks far
+    worse than one mediocre animation held steady."""
+
+    switch_margin: float = 0.15
+    """How much better a candidate must score than the current animation.
+
+    Hysteresis: ties keep what is already on screen."""
+
+    crossfade: float = 1.2
+    """Seconds to fade between animations. Effects carry internal state, so
+    swapping instantly shows a visible discontinuity; fading hides it."""
 
     scene_interval: float = 0.5
     """Seconds between classifications. The model costs under a millisecond, so
@@ -407,6 +422,10 @@ class Settings:
                      "audio_weight", "accent"):
             if not 0.0 <= getattr(m, name) <= 1.0:
                 problems.append(f"mood.{name} must be between 0.0 and 1.0")
+        if m.switch_dwell < 0 or m.crossfade <= 0:
+            problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
+        if not 0.0 <= m.switch_margin <= 1.0:
+            problems.append("mood.switch_margin must be between 0.0 and 1.0")
         if not 0.0 <= m.scene_weight <= 1.0:
             problems.append("mood.scene_weight must be between 0.0 and 1.0")
         if m.scene_interval <= 0:
