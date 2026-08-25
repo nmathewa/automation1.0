@@ -95,9 +95,19 @@ class ApiServer:
                 raise ValueError(f"static directory not found: {root}")
             self.static_dir = root
 
-        self._server = ThreadingHTTPServer((host, port), _make_handler(self))
+        try:
+            self._server = ThreadingHTTPServer((host, port), _make_handler(self))
+        except OSError as exc:
+            # A stack trace ending in errno 98 tells you nothing useful; the
+            # actionable fact is which port and that something already has it.
+            raise OSError(
+                f"cannot serve the API on {host}:{port} -- {exc.strerror}. "
+                f"Another ambviz may still be running; try --api-port with a "
+                f"different value, or stop it first."
+            ) from None
         self.address = self._server.server_address
         self._thread: threading.Thread | None = None
+        self._serving = False
 
     # ── introspection ────────────────────────────────────────────────────────
     @property
@@ -120,9 +130,21 @@ class ApiServer:
     def state(self) -> dict[str, Any]:
         return {name: provider() for name, provider in self.providers.items()}
 
+    def effects(self) -> list[str]:
+        """Effect names this build offers, or ``[]`` on a numpy-free process."""
+        try:
+            from ambviz.effects import EFFECTS
+        except ImportError:
+            return []          # `serve` runs without numpy; it renders nothing
+        return sorted(EFFECTS)
+
     # ── lifecycle ────────────────────────────────────────────────────────────
     def serve_forever(self) -> None:
-        self._server.serve_forever()
+        self._serving = True
+        try:
+            self._server.serve_forever()
+        finally:
+            self._serving = False
 
     def start(self) -> "ApiServer":
         self._thread = threading.Thread(target=self.serve_forever, daemon=True, name="ambviz-api")
@@ -130,7 +152,10 @@ class ApiServer:
         return self
 
     def stop(self) -> None:
-        self._server.shutdown()
+        # shutdown() blocks until the serve_forever loop acknowledges it, so
+        # calling it on a server that was never started hangs forever.
+        if self._serving:
+            self._server.shutdown()
         self._server.server_close()
 
     def __enter__(self) -> "ApiServer":
@@ -177,6 +202,9 @@ def _make_handler(api: ApiServer) -> type[BaseHTTPRequestHandler]:
                     "providers": sorted(api.providers),
                     "controllable": api.commands is not None,
                     "stream_fps": api.stream_fps,
+                    # So a client can offer every effect this build has rather
+                    # than a list hardcoded when it was written.
+                    "effects": api.effects(),
                 })
             elif route == "/api/state":
                 self._json(api.state())

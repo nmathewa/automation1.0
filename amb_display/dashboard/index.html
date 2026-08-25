@@ -79,6 +79,23 @@
   button:hover { color: var(--ink); }
   button[aria-pressed="true"] { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
   .seg { display: inline-flex; gap: 4px; }
+  /* Nine effects will not fit one row of a narrow grid cell, so this control
+     takes the full width and lets the buttons flow. */
+  /* A select rather than a button row: the effect library is meant to grow,
+     and a row of nine-plus buttons does not survive a narrow column. */
+  select {
+    font: inherit; font-size: 13px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 8px; width: 100%;
+  }
+  select:focus { outline: none; border-color: var(--accent); }
+
+  /* beat indicator */
+  .beat { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); }
+  .beat i {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--axis);
+    transition: background .06s, box-shadow .06s; font-style: normal;
+  }
 
   .api { gap: 6px; padding-right: 9px; }
   .api label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
@@ -160,6 +177,7 @@
   .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px 22px; }
   .ctl { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
   .ctl > span { font-size: 12px; color: var(--muted); }
+  .ctl > span small { color: var(--warn); font-size: 11px; }
   .ctl .row { display: flex; align-items: center; gap: 8px; }
   .ctl output { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; min-width: 34px; }
   input[type="range"] { flex: 1; accent-color: var(--accent); min-width: 0; }
@@ -257,11 +275,7 @@
     <div class="controls">
       <div class="ctl">
         <span>Effect</span>
-        <div class="seg" id="ctl-effect">
-          <button type="button" data-effect="spectrum">Spectrum</button>
-          <button type="button" data-effect="energy">Energy</button>
-          <button type="button" data-effect="scroll">Scroll</button>
-        </div>
+        <select id="ctl-effect" aria-label="Effect"></select>
       </div>
       <div class="ctl">
         <span>Brightness</span>
@@ -275,6 +289,34 @@
         <div class="row">
           <input type="number" id="ctl-minf" min="20" step="10" aria-label="Minimum frequency">
           <input type="number" id="ctl-maxf" min="100" step="100" aria-label="Maximum frequency">
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Vocal suppression <small id="vocal-note"></small></span>
+        <div class="row">
+          <input type="range" id="ctl-vocal" min="0" max="1" step="0.05">
+          <output id="out-vocal">—</output>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Vocal band (Hz)</span>
+        <div class="row">
+          <input type="number" id="ctl-vlow" min="0" step="10" aria-label="Vocal band low edge">
+          <input type="number" id="ctl-vhigh" min="100" step="100" aria-label="Vocal band high edge">
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Mood response <small id="mood-note"></small></span>
+        <div class="row">
+          <input type="range" id="ctl-hue-rate" min="0.02" max="0.5" step="0.005">
+          <output id="out-hue-rate">—</output>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Detail / dialogue damping</span>
+        <div class="row">
+          <input type="range" id="ctl-detail" min="0" max="1" step="0.05">
+          <input type="range" id="ctl-damp" min="0" max="1" step="0.05">
         </div>
       </div>
       <div class="ctl">
@@ -296,6 +338,7 @@
     <div class="card-head">
       <h2>Mel filterbank</h2>
       <div class="spacer"></div>
+      <span class="beat" id="beat"><i></i><span id="beat-text">—</span></span>
       <span class="key" id="spectrum-range">—</span>
     </div>
     <div class="plot-wrap" id="spectrum-wrap">
@@ -680,6 +723,16 @@
     const lit = Math.round((stats.coverage / 100) * count);
     $("k-cov-sub").textContent = `${lit} of ${count} pixels`;
 
+    if (engine && engine.onset !== undefined) {
+      const o = engine.onset;
+      const dot = $("beat").querySelector("i");
+      dot.style.background = o > 0.05 ? "var(--good)" : "var(--axis)";
+      dot.style.boxShadow = o > 0.05
+        ? `0 0 0 ${Math.round(2 + o * 5)}px color-mix(in srgb, var(--good) 22%, transparent)`
+        : "none";
+      $("beat-text").textContent = `${engine.beats ?? 0} onsets`;
+    }
+
     spark("spark-pps", history.map((h) => h.pps));
     spark("spark-kbs", history.map((h) => h.bps / 1024));
     spark("spark-ups", history.map((h) => h.pps));
@@ -805,9 +858,7 @@
    *  The smoothing alphas are not in the stream and wait for that fetch. */
   function syncFromEngine() {
     if (!engine) return;
-    for (const b of $("ctl-effect").querySelectorAll("button")) {
-      b.setAttribute("aria-pressed", String(b.dataset.effect === engine.effect));
-    }
+    if (editing !== "effect") $("ctl-effect").value = engine.effect;
     if (editing !== "brightness") {
       $("ctl-brightness").value = engine.brightness;
       $("out-brightness").textContent = Number(engine.brightness).toFixed(2);
@@ -815,6 +866,17 @@
     if (editing !== "bins") {
       $("ctl-bins").value = engine.bins;
       $("out-bins").textContent = engine.bins;
+    }
+    if (engine.vocal_suppression !== undefined && editing !== "vocal") {
+      $("ctl-vocal").value = engine.vocal_suppression;
+      $("out-vocal").textContent = Number(engine.vocal_suppression).toFixed(2);
+    }
+    if (engine.vocal_band && editing !== "vlow") $("ctl-vlow").value = engine.vocal_band[0];
+    if (engine.vocal_band && editing !== "vhigh") $("ctl-vhigh").value = engine.vocal_band[1];
+    // Cancelling the centre needs two channels; say so rather than sitting inert.
+    $("vocal-note").textContent = engine.stereo === false ? "— needs a stereo source" : "";
+    if (engine.dialogue !== undefined) {
+      $("mood-note").textContent = engine.dialogue > 0.85 ? "— speech detected" : "";
     }
     if (editing !== "minf") $("ctl-minf").value = engine.min_frequency;
     if (editing !== "maxf") $("ctl-maxf").value = engine.max_frequency;
@@ -826,12 +888,24 @@
   function syncControls(cfg, force = false) {
     if (!cfg) return false;
     settingsCache = cfg;
-    for (const b of $("ctl-effect").querySelectorAll("button")) {
-      b.setAttribute("aria-pressed", String(b.dataset.effect === cfg.effect.name));
-    }
+    if (force || editing !== "effect") $("ctl-effect").value = cfg.effect.name;
     if (force || editing !== "brightness") {
       $("ctl-brightness").value = cfg.effect.brightness;
       $("out-brightness").textContent = Number(cfg.effect.brightness).toFixed(2);
+    }
+    if (force || editing !== "vocal") {
+      $("ctl-vocal").value = cfg.dsp.vocal_suppression;
+      $("out-vocal").textContent = Number(cfg.dsp.vocal_suppression).toFixed(2);
+    }
+    if (force || editing !== "vlow") $("ctl-vlow").value = cfg.dsp.vocal_band[0];
+    if (force || editing !== "vhigh") $("ctl-vhigh").value = cfg.dsp.vocal_band[1];
+    if (cfg.mood) {
+      if (force || editing !== "huerate") {
+        $("ctl-hue-rate").value = cfg.mood.hue_rate;
+        $("out-hue-rate").textContent = (1 / cfg.mood.hue_rate).toFixed(1) + "s/turn";
+      }
+      if (force || editing !== "detail") $("ctl-detail").value = cfg.mood.detail;
+      if (force || editing !== "damp") $("ctl-damp").value = cfg.mood.dialogue_damping;
     }
     if (force || editing !== "bins") {
       $("ctl-bins").value = cfg.dsp.fft_bins;
@@ -847,9 +921,18 @@
     return true;
   }
 
-  $("ctl-effect").addEventListener("click", (e) => {
-    const name = e.target.dataset && e.target.dataset.effect;
-    if (name) send({ effect: { name } });
+  $("ctl-effect").addEventListener("change", (e) => {
+    editing = null;
+    // Only send a genuine choice. A browser restoring a form on reload fires
+    // change with its remembered value, which would push a stale selection over
+    // whatever the server was actually started with -- the server is the
+    // authority here, not a tab that happens to be open.
+    //
+    // Crucially this also skips while `engine` is still null: on a fresh
+    // reconnect the restore fires before the first telemetry arrives, so
+    // "we do not know the server's state yet" must mean "do not push".
+    if (!engine || e.target.value === engine.effect) return;
+    send({ effect: { name: e.target.value } });
   });
   bindLive($("ctl-brightness"), "brightness",
     (v) => ($("out-brightness").textContent = Number(v).toFixed(2)),
@@ -857,6 +940,18 @@
   bindLive($("ctl-bins"), "bins",
     (v) => ($("out-bins").textContent = v),
     (v) => ({ dsp: { fft_bins: Number(v) } }));
+  bindLive($("ctl-hue-rate"), "huerate",
+    (v) => ($("out-hue-rate").textContent = (1 / Number(v)).toFixed(1) + "s/turn"),
+    (v) => ({ mood: { hue_rate: Number(v) } }));
+  bindLive($("ctl-detail"), "detail", () => {}, (v) => ({ mood: { detail: Number(v) } }));
+  bindLive($("ctl-damp"), "damp", () => {}, (v) => ({ mood: { dialogue_damping: Number(v) } }));
+  bindLive($("ctl-vocal"), "vocal",
+    (v) => ($("out-vocal").textContent = Number(v).toFixed(2)),
+    (v) => ({ dsp: { vocal_suppression: Number(v) } }));
+  bindCommit($("ctl-vlow"), "vlow",
+    (v) => ({ dsp: { vocal_band: [Number(v), Number($("ctl-vhigh").value)] } }));
+  bindCommit($("ctl-vhigh"), "vhigh",
+    (v) => ({ dsp: { vocal_band: [Number($("ctl-vlow").value), Number(v)] } }));
   bindCommit($("ctl-minf"), "minf", (v) => ({ dsp: { min_frequency: Number(v) } }));
   bindCommit($("ctl-maxf"), "maxf", (v) => ({ dsp: { max_frequency: Number(v) } }));
   for (const input of $("ctl-alphas").querySelectorAll("input")) {
@@ -930,6 +1025,7 @@
       history = msg.strip.history || [];
     }
     engine = msg.engine || null;
+    if (engine && engine.effects) renderEffectButtons(engine.effects);
     // The payload's own keys name the providers, so panel visibility never has
     // to wait on a second request.
     showPanels(Object.keys(msg));
@@ -966,8 +1062,18 @@
   }
 
   /** Health carries the contract version and whether writes are accepted. */
+  const TITLE = (n) => n.charAt(0).toUpperCase() + n.slice(1);
+
+  function renderEffectButtons(names) {
+    const sel = $("ctl-effect");
+    if (!names || !names.length || sel.dataset.built === names.join(",")) return;
+    sel.dataset.built = names.join(",");
+    sel.innerHTML = names.map((n) => `<option value="${n}">${TITLE(n)}</option>`).join("");
+  }
+
   function applyHealth(h) {
     health = h;
+    renderEffectButtons(h.effects);
     $("dl-toml").href = API + "/api/settings.toml";
     showPanels(h.providers || []);
   }
@@ -1094,6 +1200,9 @@
         effect: "spectrum", brightness: 1, mirror: true, pixels: count,
         width: half, bins, source: "demo", mel,
         mel_gain: 0.42, center_frequencies: centres,
+        stereo: true, vocal_suppression: 0, vocal_band: [180, 5000],
+        onset: Math.max(0, 1 - ((t * 2) % 1) * 4), beat: ((t * 2) % 1) < 0.03,
+        beats: Math.floor(t * 2), flux: 0.3,
         min_frequency: 200, max_frequency: 12000,
       },
     };

@@ -1,0 +1,273 @@
+"""The slow layer, and the ordering it depends on."""
+
+import numpy as np
+import pytest
+
+from ambviz.dsp import AdaptiveRange, RateLimiter
+from ambviz.mood import AudioMood, Mood, blend
+from ambviz.pipeline import Visualizer
+from ambviz.settings import Settings
+
+SR = 44100
+
+
+# ── primitives ───────────────────────────────────────────────────────────────
+def test_adaptive_range_stretches_a_narrow_input():
+    r = AdaptiveRange(seconds=10, fps=60)
+    rng = np.random.default_rng(0)
+    out = [r.update(rng.uniform(0.40, 0.45)) for _ in range(1200)]
+    tail = out[-200:]
+    assert min(tail) < 0.2 and max(tail) > 0.8, f"only spanned {min(tail):.2f}-{max(tail):.2f}"
+
+
+def test_adaptive_range_ignores_a_lone_outlier():
+    """Percentiles, not min and max: one transient must not flatten the mapping."""
+    r = AdaptiveRange(seconds=10, fps=60)
+    for _ in range(600):
+        r.update(0.5)
+    r.update(1000.0)
+    for _ in range(600):
+        r.update(0.5)
+    assert r.high < 10.0, f"one outlier set the ceiling to {r.high}"
+
+
+def test_adaptive_range_holds_still_when_nothing_varies():
+    """A steady input must read as steady, not have its noise amplified."""
+    r = AdaptiveRange(seconds=10, fps=60)
+    rng = np.random.default_rng(1)
+    out = [r.update(1200.0 + rng.normal(0, 0.2)) for _ in range(1200)]
+    assert all(abs(v - 0.5) < 1e-9 for v in out[-100:])
+
+
+def test_rate_limiter_respects_its_cap():
+    lim = RateLimiter(0.1, value=0.0)
+    lim.update(1.0, 1.0)
+    assert lim.value == pytest.approx(0.1)
+
+
+def test_rate_limiter_deadband_holds_still():
+    lim = RateLimiter(1.0, value=0.5, deadband=0.05)
+    lim.update(0.52, 1.0)
+    assert lim.value == 0.5
+
+
+def test_rate_limiter_takes_the_short_way_round():
+    """Hue is circular: 0.95 to 0.05 is forward, not most of the way back."""
+    lim = RateLimiter(1.0, value=0.95, deadband=0.0, wrap=True)
+    lim.update(0.05, 1 / 60)
+    assert lim.value > 0.95 or lim.value < 0.05
+
+
+def test_default_hue_rate_traverses_in_the_intended_band():
+    """The subtlety target: a full circle in roughly 5-10 s."""
+    rate = Settings.load().mood.hue_rate
+    lim = RateLimiter(rate, value=0.0, deadband=0.01)
+    steps = 0
+    while abs(0.99 - lim.value) > lim.deadband and steps < 200_000:
+        lim.update(0.99, 1 / 60)
+        steps += 1
+    assert 5.0 <= steps / 60 <= 10.0, f"full traverse took {steps / 60:.1f}s"
+
+
+# ── blending ─────────────────────────────────────────────────────────────────
+def test_blend_averages_hue_around_the_circle():
+    """0.95 and 0.05 average to 0.0, not to 0.5 on the far side."""
+    out = blend([Mood(hue=0.95, weight=1.0), Mood(hue=0.05, weight=1.0)])
+    assert min(out.hue, 1 - out.hue) < 0.02
+
+
+def test_blend_respects_weight():
+    out = blend([Mood(level=0.0, weight=3.0), Mood(level=1.0, weight=1.0)])
+    assert out.level == pytest.approx(0.25)
+
+
+def test_blend_ignores_zero_weight_sources():
+    out = blend([Mood(hue=0.1, weight=0.0), Mood(hue=0.8, weight=1.0)])
+    assert out.hue == pytest.approx(0.8)
+
+
+# ── the claim that motivated all of this ─────────────────────────────────────
+def film_like(v, seconds, scene_period=20.0):
+    """Centred speech-band content whose spectrum drifts across a scene.
+
+    Deliberately narrow-range: that is the condition under which a fixed
+    mapping collapses to one colour.
+    """
+    n = v.samples_per_frame
+    hues = []
+    for i in range(int(seconds * v.settings.audio.fps)):
+        t = (np.arange(n) + i * n) / SR
+        f0 = 700 + 250 * np.sin(((i * n / SR) / scene_period) * 2 * np.pi)
+        speech = np.sin(2 * np.pi * f0 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3.0 * t)) * 0.7
+        v.process(np.stack([speech, speech * 0.98], axis=1) * 7000)
+        hues.append(v.effect.mood.hue)
+    return np.array(hues[int(len(hues) * 0.3):])
+
+
+def circular_sd(hues):
+    ang = hues * 2 * np.pi
+    r = np.hypot(np.mean(np.cos(ang)), np.mean(np.sin(ang)))
+    return float(np.sqrt(-2 * np.log(max(r, 1e-12))) / (2 * np.pi))
+
+
+def cinema():
+    return Visualizer(Settings.load(overrides={"effect": {"name": "cinema"}}))
+
+
+def test_adaptive_range_is_what_stops_colour_sticking():
+    """The whole point, measured.
+
+    With a fixed mapping the hue barely moves on this material -- that is the
+    reported symptom. Adaptive rescaling should make it use most of the circle.
+    """
+    fixed = cinema()
+    fixed.effect.mood_source._range.update = lambda x: float(np.clip(x / (SR / 2), 0, 1))
+    stuck = circular_sd(film_like(fixed, 90))
+
+    moving = circular_sd(film_like(cinema(), 90))
+
+    assert stuck < 0.02, f"the fixed mapping was expected to stick, got sd {stuck:.4f}"
+    assert moving > stuck * 10, f"adaptive sd {moving:.4f} vs fixed {stuck:.4f}"
+
+
+def test_hue_is_smoothed_before_being_rate_limited():
+    """Ordering regression.
+
+    Feeding a rate limiter the unsmoothed centroid whipsaws it -- it chases a
+    target that reverses several times a second and nets no movement. That
+    produced *less* colour movement than no adaptation at all.
+    """
+    v = cinema()
+    assert hasattr(v.effect.mood_source, "_smooth")
+    hues = film_like(v, 60)
+    assert circular_sd(hues) > 0.05
+
+
+def test_time_advances_with_the_audio_not_the_clock():
+    """Offline processing runs far faster than real time; a wall-clock t would
+    make the mood race and results irreproducible."""
+    v = cinema()
+    n = v.samples_per_frame
+    for _ in range(v.settings.audio.fps):
+        v.process(np.zeros((n, 2)))
+    assert v.features.t == pytest.approx(1.0, abs=0.05)
+
+
+def test_dialogue_damps_the_spectral_layer():
+    """Same scene energy, different content: speech pulls back toward the wash."""
+    from ambviz.features import Features
+
+    mood = AudioMood(Settings.load())
+    talking = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.9, dialogue=1.0, t=1.0))
+    action = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.9, dialogue=0.0, t=2.0))
+    assert talking.detail < action.detail
+
+
+def test_scene_energy_gates_the_spectral_layer():
+    """A quiet scene stays a wash however uncentred it is."""
+    from ambviz.features import Features
+
+    mood = AudioMood(Settings.load())
+    quiet = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.05, dialogue=0.0, t=1.0))
+    loud = mood.update(Features(mel=np.zeros(24), volume=0.2, energy=0.95, dialogue=0.0, t=2.0))
+    assert quiet.detail < loud.detail * 0.3
+
+
+def test_a_fight_scene_reaches_the_spectrum_and_dialogue_does_not():
+    """The behaviour the effect exists for, on one continuous timeline.
+
+    Run separately each scene would be normalised to its own range and both
+    would land mid-scale -- a film is continuous, and so is the measurement.
+    """
+    rng = np.random.default_rng(0)
+
+    def talk(i, n):
+        t = (np.arange(n) + i * n) / SR
+        f0 = 220 + 60 * np.sin(2 * np.pi * 0.4 * t)
+        v = np.sin(2 * np.pi * f0 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3.5 * t)) * 0.25
+        return np.stack([v, v], axis=1) * 7000          # centred and narrow
+
+    def fight(i, n):
+        t = (np.arange(n) + i * n) / SR
+        hits = np.exp(-((t * 4) % 1.0) * 9) * np.sin(2 * np.pi * 70 * t) * 1.2
+        brass = 0.5 * np.sin(2 * np.pi * 330 * t) + 0.4 * np.sin(2 * np.pi * 495 * t)
+        left = (rng.normal(0, 1, n) * 0.5 + hits + brass) * 0.7
+        right = (rng.normal(0, 1, n) * 0.5 + hits + brass * 0.8) * 0.7
+        return np.stack([left, right], axis=1) * 7000   # loud, wide, transient
+
+    v = cinema()
+    n = v.samples_per_frame
+    i, means = 0, []
+    for gen, secs in ((talk, 25), (fight, 25), (talk, 25)):
+        seg = []
+        for _ in range(int(secs * v.settings.audio.fps)):
+            v.process(gen(i, n))
+            i += 1
+            seg.append(v.effect.mood.detail)
+        means.append(float(np.mean(seg[len(seg) // 2:])))
+
+    quiet_a, action, quiet_b = means
+    # The separation is the point, not any particular level: adding an absolute
+    # floor to onset detection removed spurious onsets that had been inflating
+    # the fight's energy, so the absolute figure moved while the gap did not.
+    assert action > 0.4, f"the fight only reached detail {action:.2f}"
+    assert quiet_a < 0.3 and quiet_b < 0.3, f"dialogue sat at {quiet_a:.2f}/{quiet_b:.2f}"
+    assert action > max(quiet_a, quiet_b) * 3
+
+
+def test_brightness_never_reaches_zero():
+    """A strip snapping fully dark mid-scene is worse than one that drifts."""
+    v = cinema()
+    out = v.process(np.zeros((v.samples_per_frame, 2)))
+    assert out.max() == 0.0            # true silence still blanks
+    for _ in range(30):
+        out = v.process(np.full((v.samples_per_frame, 2), 30.0))
+    assert out.max() > 0.0, "quiet audio should still show the floor"
+
+
+# ── dynamics ─────────────────────────────────────────────────────────────────
+def test_rate_limiter_rises_faster_than_it_falls():
+    """Symmetric limiting was what made the effect feel sluggish: a hit took as
+    long to appear as it took to decay."""
+    from ambviz.dsp import RateLimiter
+
+    lim = RateLimiter(10.0, value=0.0, fall_per_second=0.5)
+    lim.update(1.0, 0.1)
+    assert lim.value == pytest.approx(1.0)
+    lim.update(0.0, 0.1)
+    assert lim.value == pytest.approx(0.95)
+
+
+def test_default_attack_lands_within_a_fifth_of_a_second():
+    from ambviz.dsp import RateLimiter
+
+    cfg = Settings.load().mood
+    lim = RateLimiter(1 / cfg.attack, value=0.0, fall_per_second=1 / cfg.release)
+    steps = 0
+    while lim.value < 0.95 and steps < 100_000:
+        lim.update(1.0, 1 / 60)
+        steps += 1
+    assert steps / 60 < 0.2, f"a hit took {steps / 60:.2f}s to land"
+    assert cfg.release > cfg.attack * 5
+
+
+def test_onsets_reach_the_output():
+    """The rewrite as a cross-fade dropped beat response entirely; this is the
+    regression guard."""
+    v = cinema()
+    n = v.samples_per_frame
+    rng = np.random.default_rng(0)
+    peaks = []
+    for i in range(240):
+        t = (np.arange(n) + i * n) / SR
+        env = np.exp(-((t * 3) % 1.0) * 12)              # a hit three times a second
+        hit = np.sin(2 * np.pi * 65 * t) * env
+        peaks.append(float(v.process(np.stack([hit, hit * 0.9], axis=1) * 9000).max()))
+    tail = np.array(peaks[120:])
+    assert tail.max() - tail.min() > 30, \
+        f"output barely moved on a beat: {tail.min():.0f}-{tail.max():.0f}"
+
+
+def test_a_longer_attack_than_release_is_warned_about():
+    s = Settings.load(overrides={"mood": {"attack": 3.0, "release": 1.0}})
+    assert any("wrong way round" in w for w in s.warnings)

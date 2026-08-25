@@ -84,12 +84,25 @@ class Audio:
     """Where samples come from."""
 
     source: str = "mic"
-    """``mic`` (live input), ``synth`` (generated test signal, no hardware needed),
-    or ``wav`` (loop a .wav file via the stdlib ``wave`` module)."""
+    """Where audio comes from:
 
-    input_device: int | None = None
-    """PortAudio input device index. ``None`` uses the system default.
-    Run ``python run.py --list-devices`` to see the options."""
+    ``mic``       a hardware input, via PortAudio
+    ``loopback``  what the machine is playing, tapped from the mixer -- no
+                  microphone involved, and far cleaner than one
+    ``synth``     a generated test signal, needing no hardware at all
+    ``wav``       a .wav file on a loop
+    """
+
+    input_device: int | str | None = None
+    """What to capture from.
+
+    With ``source = "mic"``: a PortAudio device index, or part of a device name.
+    With ``source = "loopback"``: part of a monitor, an output device, or the
+    name of a running application -- empty follows the default output.
+
+    Names are matched case-insensitively, which survives the reordering that
+    indices are prone to -- ``"pulse"`` keeps working, ``13`` may not.
+    ``None`` uses the system default. See ``ambviz devices``."""
 
     wav_path: str = ""
     """Source file when ``source = "wav"``."""
@@ -140,13 +153,140 @@ class Dsp:
     gain_sigma: float = 1.0
     """Gaussian blur sigma used when finding the peak for automatic gain control."""
 
+    onset_sensitivity: float = 1.4
+    """How far spectral flux must exceed its running average to count as an onset.
+
+    Swept against a 120 BPM loop whose true onset grid is one every 0.250 s:
+    1.2 caught 42 in 12 s, 1.4 caught 38, 1.8 caught 28. The median gap stayed
+    at 0.250 s throughout, so the detector locks regardless and this only sets
+    how many it catches. 1.4 keeps headroom before noise starts triggering it."""
+
+    onset_refractory: float = 0.12
+    """Minimum seconds between beats. 0.12 caps at 500 BPM."""
+
+    vocal_suppression: float = 0.9
+    """How far to cancel centre-panned content, 0-1. Needs a stereo source.
+
+    Applies to **colour only**. L - R removes everything centred, which in a real
+    mix is the kick, the snare and often the lead as well as the voice -- so
+    suppressing the whole analysis removes the song, not the singer. Level,
+    onsets and energy always come from the full mix; only the hue is derived from
+    the suppressed spectrum. That is why the default can be this aggressive
+    without the strip going quiet.
+
+    The blend is linear in amplitude, so 0.5 really does leave half the voice
+    behind. Values below about 0.8 do very little.
+
+    Vocals sit in the centre of almost every mix, so ``L - R`` removes them
+    without a model. 1.0 replaces the band entirely with the side channel;
+    0.7-0.8 usually reads better, leaving a trace so the result does not sound
+    -- or look -- hollow."""
+
+    vocal_band: tuple[float, float] = (180.0, 5000.0)
+    """Where suppression applies, in Hz.
+
+    Restricting it matters: the kick and bass are centre-panned too, so
+    cancelling everywhere would remove exactly what drives the low bands.
+    Outside this range the mid channel is used untouched."""
+
+
+@dataclass
+class Mood:
+    """The slow layer: what the light does over a scene rather than a beat.
+
+    Analysis-level and rig-wide, like ``[dsp]`` -- one mood feeding every node,
+    for the same reason one analysis pass does.
+    """
+
+    response_seconds: float = 8.0
+    """Roughly how long a full colour traverse takes. The subtlety knob."""
+
+    attack: float = 0.12
+    """Seconds for brightness to reach a new peak. Short: a drum hit should land."""
+
+    release: float = 2.0
+    """Seconds for brightness to fall back. Long, so it breathes rather than
+    flickers. The gap between this and attack is what makes movement read as
+    dynamic rather than merely fast."""
+
+    accent: float = 0.18
+    """How much a hit brightens the strip, 0-1.
+
+    Deliberately small. Punctuation, not rhythm -- when a scene genuinely wants
+    rhythm the director switches to an effect built for it, rather than making
+    the wash beat. An earlier default of 0.5 made every scene throb."""
+
+    hue_rate: float = 0.125
+    """Maximum hue movement per second, in turns. 0.125 crosses the circle in
+    8 s. Capping the *rate* is what makes it read as calm rather than merely
+    smoothed."""
+
+    deadband: float = 0.01
+    """Hue changes smaller than this produce no movement at all, so the light
+    holds instead of shimmering. Hyperion calls the equivalent hysteresis."""
+
+    floor: float = 0.06
+    """Minimum brightness, 0-1. A strip snapping fully dark during a quiet line
+    is more distracting than one that drifts -- Hyperion's backlight threshold."""
+
+    dialogue_damping: float = 0.8
+    """How far speech suppresses the fast layer, 0-1. Film dialogue is centred,
+    so it is detectable from the mid-to-side ratio without recognising anything."""
+
+    detail: float = 1.0
+    """Ceiling on the spectral layer, before scene energy and dialogue scale it.
+
+    1.0 lets a loud, wideband scene reach a fully spectral display; the scene
+    itself decides how close it gets. Lower it to cap how energetic the effect is
+    ever allowed to become."""
+
+    audio_weight: float = 1.0
+    """Weight of the audio-derived mood. Exists so a picture feed can be blended
+    in later without reworking the effect -- see mood.py."""
+
+    range_seconds: float = 45.0
+    """Window the adaptive range learns over. Long enough to span a scene."""
+
+    scene_weight: float = 0.7
+    """How far YAMNet's opinion overrides the hand-rolled features, 0-1.
+
+    The DSP features describe how audio behaves; the model describes what it is.
+    The model is the better judge of "is this speech", but it works on ~1 s
+    windows, so it is blended rather than trusted outright. 0 ignores it."""
+
+    animations: tuple[str, ...] = ("bars", "energy", "scroll", "spectrum", "waterfall")
+    """Which animations "auto" may choose between, in no particular order.
+
+    A setting rather than a fixed list so the shortlist can change without a
+    code edit. Names must exist in the effect registry; unknown ones are
+    rejected at load rather than silently ignored."""
+
+    switch_dwell: float = 8.0
+    """Minimum seconds on one animation before another may take over.
+
+    Without it the selector flaps at every threshold crossing, which looks far
+    worse than one mediocre animation held steady."""
+
+    switch_margin: float = 0.15
+    """How much better a candidate must score than the current animation.
+
+    Hysteresis: ties keep what is already on screen."""
+
+    crossfade: float = 1.2
+    """Seconds to fade between animations. Effects carry internal state, so
+    swapping instantly shows a visible discontinuity; fading hides it."""
+
+    scene_interval: float = 0.5
+    """Seconds between classifications. The model costs under a millisecond, so
+    this is about how fast a scene label should move, not about CPU."""
+
 
 @dataclass
 class Effect:
     """Frequency domain to pixels."""
 
     name: str = "spectrum"
-    """``spectrum``, ``energy`` or ``scroll``."""
+    """Which effect to run. ``ambviz effects`` lists them."""
 
     mirror: bool = True
     """Mirror the pattern about the centre of the strip."""
@@ -192,6 +332,7 @@ class Settings:
     dsp: Dsp = field(default_factory=Dsp)
     effect: Effect = field(default_factory=Effect)
     smoothing: Smoothing = field(default_factory=Smoothing)
+    mood: Mood = field(default_factory=Mood)
     display_fps: bool = True
 
     def __post_init__(self) -> None:
@@ -244,23 +385,32 @@ class Settings:
         # TOML has no null: an empty string means "unset" for optional values.
         if self.audio.input_device == "":
             self.audio.input_device = None
-        if self.audio.input_device is not None and not isinstance(self.audio.input_device, int):
-            problems.append("audio.input_device must be an integer index or empty")
+        if self.audio.input_device is not None and not isinstance(self.audio.input_device, (int, str)):
+            problems.append("audio.input_device must be a device index, a name, or empty")
 
         if self.output.pixels < 1:
             problems.append("output.pixels must be >= 1")
         if self.output.device not in ("udp", "none"):
             problems.append(f"output.device must be 'udp' or 'none', got {self.output.device!r}")
-        if self.audio.source not in ("mic", "synth", "wav"):
-            problems.append(f"audio.source must be 'mic', 'synth' or 'wav', got {self.audio.source!r}")
+        if self.audio.source not in ("mic", "loopback", "synth", "wav"):
+            problems.append(
+                f"audio.source must be 'mic', 'loopback', 'synth' or 'wav', "
+                f"got {self.audio.source!r}"
+            )
         if self.audio.source == "wav" and not self.audio.wav_path:
             problems.append("audio.source is 'wav' but audio.wav_path is empty")
         if self.audio.synth_bpm <= 0:
             problems.append("audio.synth_bpm must be positive")
         if not 0 < self.audio.synth_amplitude <= 32767:
             problems.append("audio.synth_amplitude must be between 0 and 32767")
-        if self.effect.name not in ("spectrum", "energy", "scroll"):
-            problems.append(f"unknown effect.name {self.effect.name!r}")
+        # Imported lazily: settings.py must stay importable without numpy.
+        from ambviz.effects import EFFECTS  # noqa: PLC0415
+
+        if self.effect.name not in EFFECTS:
+            problems.append(
+                f"unknown effect.name {self.effect.name!r}; "
+                f"expected one of {sorted(EFFECTS)}"
+            )
         if not 0.0 <= self.effect.brightness <= 1.0:
             problems.append("effect.brightness must be between 0.0 and 1.0")
 
@@ -272,6 +422,58 @@ class Settings:
             )
         if self.dsp.min_frequency >= self.dsp.max_frequency:
             problems.append("dsp.min_frequency must be below dsp.max_frequency")
+
+        m = self.mood
+        if m.response_seconds <= 0:
+            problems.append("mood.response_seconds must be positive")
+        if m.hue_rate <= 0:
+            problems.append("mood.hue_rate must be positive")
+        if m.attack <= 0 or m.release <= 0:
+            problems.append("mood.attack and mood.release must be positive")
+        if m.attack > m.release:
+            warnings.append(
+                "mood.attack is longer than mood.release, so the strip fades "
+                "faster than it lights; that is usually the wrong way round"
+            )
+        for name in ("deadband", "floor", "dialogue_damping", "detail",
+                     "audio_weight", "accent"):
+            if not 0.0 <= getattr(m, name) <= 1.0:
+                problems.append(f"mood.{name} must be between 0.0 and 1.0")
+        from ambviz.effects import EFFECTS  # noqa: PLC0415 - keeps this numpy-free until needed
+
+        if not m.animations:
+            problems.append("mood.animations must list at least one animation")
+        unknown = [n for n in m.animations if n not in EFFECTS]
+        if unknown:
+            problems.append(
+                f"mood.animations names unknown effect(s) {unknown}; "
+                f"expected from {sorted(n for n in EFFECTS if n != 'auto')}"
+            )
+        if "auto" in m.animations:
+            problems.append("mood.animations must not contain 'auto'")
+        if m.switch_dwell < 0 or m.crossfade <= 0:
+            problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
+        if not 0.0 <= m.switch_margin <= 1.0:
+            problems.append("mood.switch_margin must be between 0.0 and 1.0")
+        if not 0.0 <= m.scene_weight <= 1.0:
+            problems.append("mood.scene_weight must be between 0.0 and 1.0")
+        if m.scene_interval <= 0:
+            problems.append("mood.scene_interval must be positive")
+        if m.range_seconds < 1.0:
+            problems.append("mood.range_seconds must be at least 1 second")
+
+        if not 0.0 <= self.dsp.vocal_suppression <= 1.0:
+            problems.append("dsp.vocal_suppression must be between 0.0 and 1.0")
+        low, high = self.dsp.vocal_band
+        if low >= high:
+            problems.append("dsp.vocal_band must be (low, high) with low below high")
+        if low < 0:
+            problems.append("dsp.vocal_band lower edge must not be negative")
+
+        if self.dsp.onset_sensitivity <= 1.0:
+            problems.append("dsp.onset_sensitivity must be greater than 1.0")
+        if self.dsp.onset_refractory < 0:
+            problems.append("dsp.onset_refractory must not be negative")
 
         for name, alpha in vars(self.smoothing).items():
             lo, hi = alpha
