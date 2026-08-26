@@ -73,31 +73,73 @@ def test_auto_cannot_contain_itself():
 
 # ── switching discipline ─────────────────────────────────────────────────────
 def test_dwell_time_blocks_a_rapid_second_switch():
+    """Even a genuine change in character cannot switch inside the dwell."""
     d = Director(Settings.load(), 60)
+    calm = Features(mel=np.zeros(24), volume=0.4, energy=0.1,
+                    onset_rate=0.0, dialogue=0.9, brightness=0.1, t=0.0)
+    d.choose(calm)                              # anchor on the calm character
     d.last_switch = 100.0
     d.current = "spectrum"
     hot = Features(mel=np.zeros(24), volume=0.6, energy=0.9,
-                   onset_rate=0.95, dialogue=0.0, brightness=0.9, t=101.0)
-    # Five seconds of identical content. Scores are smoothed now, so a
-    # favourite has to establish itself over time rather than in one frame --
-    # the dwell must hold throughout regardless.
-    for i in range(300):
+                   onset_rate=0.95, dialogue=0.0, brightness=0.9, t=100.0)
+    dwell = d.settings.mood.switch_dwell
+    for i in range(int(dwell * 60) - 6):
         hot.t = 100.0 + i / 60.0
         assert d.choose(hot) == "spectrum", "switched inside the dwell window"
-    hot.t = 100.0 + d.settings.mood.switch_dwell + 0.1
-    assert d.choose(hot) != "spectrum"
+    # Past the dwell the accumulated character change may now act.
+    for i in range(300):
+        hot.t = 100.0 + dwell + 0.1 + i / 60.0
+        if d.choose(hot) != "spectrum":
+            return
+    raise AssertionError("character moved but the switch never came")
 
 
-def test_a_tie_keeps_what_is_already_running():
-    """Hysteresis: without a margin the selector flaps at every crossing."""
+def test_steady_audio_keeps_what_is_already_running():
+    """Was hysteresis-on-scores; now the rule itself. A switch needs the
+    audio's character to move (or max_dwell to expire) -- score crossings
+    alone never cause one, which is what made score noise harmless."""
     d = Director(Settings.load(), 60)
-    d.last_switch = -1000.0
     balanced = Features(mel=np.zeros(24), volume=0.4, energy=0.5,
                         onset_rate=0.5, dialogue=0.5, brightness=0.5, t=0.0)
-    scores = score_candidates(balanced, d.allowed)
-    best = max(scores, key=lambda k: scores[k])
-    d.current = best
-    assert d.choose(balanced) == best
+    d.choose(balanced)                      # anchors on this character
+    start = d.current
+    dwell = d.settings.mood.switch_dwell
+    for i in range(600):                    # 10 s, past dwell, within max_dwell
+        balanced.t = i / 60.0
+        assert d.choose(balanced) == start, "switched on steady audio"
+    assert balanced.t > dwell
+
+
+def test_a_change_in_character_switches_to_something_else():
+    """The incumbent is never re-elected: variety is the rule, not a weight."""
+    d = Director(Settings.load(), 60)
+    calm = Features(mel=np.zeros(24), volume=0.4, energy=0.1,
+                    onset_rate=0.0, dialogue=0.9, brightness=0.1, t=0.0)
+    for i in range(600):
+        calm.t = i / 60.0
+        d.choose(calm)
+    before = d.current
+    loud = Features(mel=np.zeros(24), volume=0.6, energy=0.95,
+                    onset_rate=0.9, dialogue=0.0, brightness=0.9, t=10.0)
+    got = before
+    for i in range(600):                    # let the smoothed character move
+        loud.t = 10.0 + i / 60.0
+        got = d.choose(loud)
+        if got != before:
+            break
+    assert got != before, "character moved but nothing switched"
+
+
+def test_max_dwell_rotates_even_on_static_audio():
+    """The rotation guarantee -- starvation was the complaint that forced
+    this design."""
+    d = Director(Settings.load(), 60)
+    still = Features(mel=np.zeros(24), volume=0.4, energy=0.5,
+                     onset_rate=0.5, dialogue=0.5, brightness=0.5, t=0.0)
+    d.choose(still)
+    start = d.current
+    still.t = d.settings.mood.max_dwell + 1.0
+    assert d.choose(still) != start
 
 
 def test_crossfade_renders_both_animations():

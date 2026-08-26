@@ -588,6 +588,10 @@ class Director(Effect):
         alpha = min(0.999, 1.0 / (seconds * max(settings.audio.fps, 1)))
         self._smooth = {n: ExpFilter(0.0, alpha_decay=alpha, alpha_rise=alpha)
                         for n in self.allowed}
+        self._char = ExpFilter(np.zeros(4), alpha_decay=alpha, alpha_rise=alpha)
+        self.anchor: np.ndarray | None = None
+        self.drift = 0.0
+        """Distance the audio's character has moved since the last switch."""
 
     def _effect(self, name: str) -> Effect:
         # Built on first use and kept: recreating one per switch would discard
@@ -596,21 +600,51 @@ class Director(Effect):
             self._cache[name] = EFFECTS[name](self.settings, self.width)
         return self._cache[name]
 
+    def _character(self, f: Features) -> np.ndarray:
+        """The audio's character as a point: what "the scene changed" measures."""
+        raw = np.array([f.energy, f.onset_rate, f.brightness, f.dialogue])
+        # Seed on first sight rather than smoothing up from zero. Warming up
+        # from zeros meant the anchor was captured mid-warm-up and the drift
+        # measured the filter converging, not the audio moving -- the director
+        # switched once at startup on any material.
+        if self.anchor is None:
+            self._char.value = np.copy(raw)
+        return self._char.update(raw)
+
     def choose(self, f: Features) -> str:
-        """The animation that should be running, given hysteresis and dwell."""
+        """Switch when the audio changes character; scores only rank what
+        comes next.
+
+        The previous rule -- argmax of suitability scores behind margin and
+        dwell -- was undependable by construction: all candidates score within
+        about 0.2 of each other while any one score moves more than that with
+        the material, so every weighting starved some animation and locked the
+        winner to the song. Whether to switch and what to switch to are now
+        separate questions. A switch happens when the character vector moves
+        ``change_threshold`` from where it was at the last switch (or
+        ``max_dwell`` expires, the rotation guarantee), and it always goes to
+        the best-ranked candidate *other than* the incumbent, so variety is a
+        property of the rule rather than of the weights.
+        """
         cfg = self.settings.mood
         raw = score_candidates(f, self.allowed)
-        if not raw:
-            return self.current
-        self.scores = {n: float(self._smooth[n].update(v)) for n, v in raw.items()}
-        best = max(self.scores, key=lambda k: self.scores[k])
-        if best == self.current:
+        if raw:
+            self.scores = {n: float(self._smooth[n].update(v)) for n, v in raw.items()}
+        vec = self._character(f)
+        if self.anchor is None:
+            self.anchor = np.copy(vec)
+        self.drift = float(np.linalg.norm(vec - self.anchor))
+        if len(self.allowed) < 2 or not self.scores:
             return self.current
         if f.t - self.last_switch < cfg.switch_dwell:
             return self.current
-        if self.scores[best] < self.scores.get(self.current, 0.0) + cfg.switch_margin:
+        moved = self.drift > cfg.change_threshold
+        expired = f.t - self.last_switch > cfg.max_dwell
+        if not (moved or expired):
             return self.current
-        return best
+        self.anchor = np.copy(vec)
+        others = {n: v for n, v in self.scores.items() if n != self.current}
+        return max(others, key=lambda k: others[k])
 
     def render(self, f: Features) -> np.ndarray:
         cfg = self.settings.mood
@@ -642,6 +676,7 @@ class Director(Effect):
             "previous": self.previous,
             "fade": round(self.fade, 3),
             "switches": self.switches,
+            "drift": round(self.drift, 3),
             "scores": {k: round(v, 3) for k, v in sorted(self.scores.items())},
         }
 

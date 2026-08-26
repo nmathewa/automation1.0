@@ -303,6 +303,28 @@ class Mood:
     random moments, which looked lively and meant nothing. If the settled
     behaviour is too static the knob to reach for is this one, downward."""
 
+    change_threshold: float = 0.25
+    """How far the audio's character must move before a switch is considered.
+
+    Distance between the current smoothed feature vector (energy, onset rate,
+    brightness, dialogue) and the one captured at the last switch. On the
+    43 s reference clip 0.25 fires about every 11 seconds; a film's dialogue
+    scene holds one anchor for minutes.
+
+    This replaced hysteresis-on-scores as the thing that decides *whether* to
+    switch. Hand-written suitability scores turned out to be undependable at
+    that job: all candidates sit within ~0.2 of each other while individual
+    scores move more than that with the material, so every weighting produced
+    some starved animation and a winner locked to the song. Scores now only
+    rank what comes next -- they never re-elect the incumbent."""
+
+    max_dwell: float = 45.0
+    """Switch anyway after this many seconds, however static the audio.
+
+    The rotation guarantee: with change detection alone a single long scene
+    would hold one animation forever, and starvation was the complaint that
+    forced this design."""
+
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.
 
@@ -497,6 +519,10 @@ class Settings:
             problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
         if not 0.0 <= m.switch_margin <= 1.0:
             problems.append("mood.switch_margin must be between 0.0 and 1.0")
+        if m.change_threshold <= 0.0:
+            problems.append("mood.change_threshold must be positive")
+        if m.max_dwell < m.switch_dwell:
+            problems.append("mood.max_dwell must be at least mood.switch_dwell")
         if not 0.0 <= m.scene_weight <= 1.0:
             problems.append("mood.scene_weight must be between 0.0 and 1.0")
         if m.scene_interval <= 0:

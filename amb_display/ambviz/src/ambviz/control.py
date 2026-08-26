@@ -50,6 +50,8 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "mood.animations",
     "mood.switch_dwell",
     "mood.switch_margin",
+    "mood.change_threshold",
+    "mood.max_dwell",
     "mood.crossfade",
     "mood.deadband",
     "mood.floor",
