@@ -281,6 +281,28 @@ class Mood:
     ``freqwave`` and ``puddles`` take their places, covering the pitch and
     sparse families that nothing else in the shortlist covers."""
 
+    score_smoothing: float = 2.0
+    """Seconds of smoothing applied to each candidate's score before comparing.
+
+    Without this the selector is a coin flip. Scores are recomputed per frame
+    from features that jitter, and measured over 43 s of real audio no
+    candidate ever held the lead for as long as one second -- longest unbroken
+    spell as top scorer was 0.9 s for the winner and 0.0-0.4 s for the rest,
+    against an eight second dwell. So whichever candidate happened to be ahead
+    at the instant the dwell expired won, which is why animations switched
+    without the audio changing and why some never appeared at all.
+
+    Smoothing is what makes ``switch_margin`` and ``switch_dwell`` mean
+    something: they can only arbitrate between candidates whose ordering is
+    stable for longer than a frame.
+
+    The honest cost, measured on the same clip: with the noise gone the
+    ordering mostly stops changing, so switches drop from 5 to 1 and the strip
+    settles on the genuine winner for long stretches. The pre-smoothing
+    variety was churn, not responsiveness -- candidates were being picked at
+    random moments, which looked lively and meant nothing. If the settled
+    behaviour is too static the knob to reach for is this one, downward."""
+
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.
 

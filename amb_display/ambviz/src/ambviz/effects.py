@@ -159,8 +159,15 @@ class BarsEffect(Effect):
     def render(self, features: Features) -> np.ndarray:
         levels = np.clip(self.levels.update(np.copy(features.mel)), 0.0, 1.5)
         spread = interpolate(levels, self.width)
+        # Undo the analysis exponent for display. dsp.mel_exponent squares the
+        # filterbank, which sharpens peaks for the feature extractors and is
+        # exactly wrong for brightness: mapped straight through, 78% of band
+        # values landed under 13/255 and the strip read as black with a couple
+        # of lit pixels. Analysis and display want opposite curves here.
+        gamma = 1.0 / max(self.settings.dsp.mel_exponent, 1e-6)
+        value = np.clip(spread, 0.0, 1.0) ** gamma
         hue = np.linspace(0.0, 0.75, self.width)
-        return _hsv_to_rgb(hue, 1.0, np.clip(spread, 0.0, 1.0)) * 255.0
+        return _hsv_to_rgb(hue, 1.0, value) * 255.0
 
 
 class GravcenterEffect(Effect):
@@ -574,6 +581,13 @@ class Director(Effect):
         self.last_switch = 0.0
         self.switches = 0
         self.scores: dict[str, float] = {}
+        # One filter per candidate. Comparing raw per-frame scores made the
+        # lead change roughly twice a second, so dwell and margin were
+        # arbitrating noise.
+        seconds = max(settings.mood.score_smoothing, 1e-3)
+        alpha = min(0.999, 1.0 / (seconds * max(settings.audio.fps, 1)))
+        self._smooth = {n: ExpFilter(0.0, alpha_decay=alpha, alpha_rise=alpha)
+                        for n in self.allowed}
 
     def _effect(self, name: str) -> Effect:
         # Built on first use and kept: recreating one per switch would discard
@@ -585,9 +599,10 @@ class Director(Effect):
     def choose(self, f: Features) -> str:
         """The animation that should be running, given hysteresis and dwell."""
         cfg = self.settings.mood
-        self.scores = score_candidates(f, self.allowed)
-        if not self.scores:
+        raw = score_candidates(f, self.allowed)
+        if not raw:
             return self.current
+        self.scores = {n: float(self._smooth[n].update(v)) for n, v in raw.items()}
         best = max(self.scores, key=lambda k: self.scores[k])
         if best == self.current:
             return self.current

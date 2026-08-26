@@ -78,7 +78,12 @@ def test_dwell_time_blocks_a_rapid_second_switch():
     d.current = "spectrum"
     hot = Features(mel=np.zeros(24), volume=0.6, energy=0.9,
                    onset_rate=0.95, dialogue=0.0, brightness=0.9, t=101.0)
-    assert d.choose(hot) == "spectrum", "switched inside the dwell window"
+    # Five seconds of identical content. Scores are smoothed now, so a
+    # favourite has to establish itself over time rather than in one frame --
+    # the dwell must hold throughout regardless.
+    for i in range(300):
+        hot.t = 100.0 + i / 60.0
+        assert d.choose(hot) == "spectrum", "switched inside the dwell window"
     hot.t = 100.0 + d.settings.mood.switch_dwell + 0.1
     assert d.choose(hot) != "spectrum"
 
