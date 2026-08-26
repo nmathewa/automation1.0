@@ -20,6 +20,11 @@ def auto(**mood):
 
 # ── scoring, without any audio ───────────────────────────────────────────────
 def test_a_quiet_centred_scene_picks_the_calmest_option():
+    """``spectrum`` again. It briefly became ``pacifica``, but pacifica drifts
+    once every 18-42 s under a 2.8 s level filter, so on screen it neither
+    moved nor tracked the music and it left the shortlist. Spectrum is the
+    calmest option *available*, which is not the same as a calm one -- the
+    shortlist has no ambient member until something is tuned to be one."""
     quiet = Features(mel=np.zeros(24), volume=0.1, dialogue=0.95, energy=0.1)
     scores = score_candidates(quiet, Settings.load().mood.animations)
     assert max(scores, key=lambda k: scores[k]) == "spectrum"
@@ -29,7 +34,8 @@ def test_beats_prefer_a_pulse_driven_animation():
     beat = Features(mel=np.zeros(24), volume=0.6, dialogue=0.1, energy=0.7,
                     onset_rate=0.9, brightness=0.6)
     scores = score_candidates(beat, Settings.load().mood.animations)
-    assert scores["scroll"] > scores["spectrum"]
+    # puddles is the pulse-driven member now that scroll has left the list.
+    assert scores["puddles"] > scores["spectrum"]
 
 
 def test_wide_loud_content_prefers_a_band_display():
@@ -67,26 +73,73 @@ def test_auto_cannot_contain_itself():
 
 # ── switching discipline ─────────────────────────────────────────────────────
 def test_dwell_time_blocks_a_rapid_second_switch():
+    """Even a genuine change in character cannot switch inside the dwell."""
     d = Director(Settings.load(), 60)
+    calm = Features(mel=np.zeros(24), volume=0.4, energy=0.1,
+                    onset_rate=0.0, dialogue=0.9, brightness=0.1, t=0.0)
+    d.choose(calm)                              # anchor on the calm character
     d.last_switch = 100.0
     d.current = "spectrum"
     hot = Features(mel=np.zeros(24), volume=0.6, energy=0.9,
-                   onset_rate=0.95, dialogue=0.0, brightness=0.9, t=101.0)
-    assert d.choose(hot) == "spectrum", "switched inside the dwell window"
-    hot.t = 100.0 + d.settings.mood.switch_dwell + 0.1
-    assert d.choose(hot) != "spectrum"
+                   onset_rate=0.95, dialogue=0.0, brightness=0.9, t=100.0)
+    dwell = d.settings.mood.switch_dwell
+    for i in range(int(dwell * 60) - 6):
+        hot.t = 100.0 + i / 60.0
+        assert d.choose(hot) == "spectrum", "switched inside the dwell window"
+    # Past the dwell the accumulated character change may now act.
+    for i in range(300):
+        hot.t = 100.0 + dwell + 0.1 + i / 60.0
+        if d.choose(hot) != "spectrum":
+            return
+    raise AssertionError("character moved but the switch never came")
 
 
-def test_a_tie_keeps_what_is_already_running():
-    """Hysteresis: without a margin the selector flaps at every crossing."""
+def test_steady_audio_keeps_what_is_already_running():
+    """Was hysteresis-on-scores; now the rule itself. A switch needs the
+    audio's character to move (or max_dwell to expire) -- score crossings
+    alone never cause one, which is what made score noise harmless."""
     d = Director(Settings.load(), 60)
-    d.last_switch = -1000.0
     balanced = Features(mel=np.zeros(24), volume=0.4, energy=0.5,
                         onset_rate=0.5, dialogue=0.5, brightness=0.5, t=0.0)
-    scores = score_candidates(balanced, d.allowed)
-    best = max(scores, key=lambda k: scores[k])
-    d.current = best
-    assert d.choose(balanced) == best
+    d.choose(balanced)                      # anchors on this character
+    start = d.current
+    dwell = d.settings.mood.switch_dwell
+    for i in range(600):                    # 10 s, past dwell, within max_dwell
+        balanced.t = i / 60.0
+        assert d.choose(balanced) == start, "switched on steady audio"
+    assert balanced.t > dwell
+
+
+def test_a_change_in_character_switches_to_something_else():
+    """The incumbent is never re-elected: variety is the rule, not a weight."""
+    d = Director(Settings.load(), 60)
+    calm = Features(mel=np.zeros(24), volume=0.4, energy=0.1,
+                    onset_rate=0.0, dialogue=0.9, brightness=0.1, t=0.0)
+    for i in range(600):
+        calm.t = i / 60.0
+        d.choose(calm)
+    before = d.current
+    loud = Features(mel=np.zeros(24), volume=0.6, energy=0.95,
+                    onset_rate=0.9, dialogue=0.0, brightness=0.9, t=10.0)
+    got = before
+    for i in range(600):                    # let the smoothed character move
+        loud.t = 10.0 + i / 60.0
+        got = d.choose(loud)
+        if got != before:
+            break
+    assert got != before, "character moved but nothing switched"
+
+
+def test_max_dwell_rotates_even_on_static_audio():
+    """The rotation guarantee -- starvation was the complaint that forced
+    this design."""
+    d = Director(Settings.load(), 60)
+    still = Features(mel=np.zeros(24), volume=0.4, energy=0.5,
+                     onset_rate=0.5, dialogue=0.5, brightness=0.5, t=0.0)
+    d.choose(still)
+    start = d.current
+    still.t = d.settings.mood.max_dwell + 1.0
+    assert d.choose(still) != start
 
 
 def test_crossfade_renders_both_animations():
@@ -141,3 +194,49 @@ def test_drums_still_fire_onsets():
         kick = np.exp(-((t * 2) % 1.0) * 10) * np.sin(2 * np.pi * 60 * t) * 1.3
         v.process(np.stack([kick, kick], axis=1) * 7000)
     assert v.beats - before >= 15, f"only {v.beats - before} onsets on a drum track"
+
+
+def _f(**kw):
+    kw.setdefault("mel", np.zeros(24))
+    kw.setdefault("volume", 0.2)
+    return Features(**kw)
+
+
+#: A shortlist with one member of each family, as the new effects are meant to
+#: be used. Scored against the whole library instead, ``puddles`` and
+#: ``pixelwave`` are near-ties -- they are both "light on an onset", and
+#: ``puddles`` exists as the replacement for ``pixelwave`` rather than
+#: alongside it. Nothing distinguishes them until there is a feature for how
+#: *regular* a pulse is.
+WIDE = ("bars", "energy", "scroll", "spectrum", "waterfall",
+        "pacifica", "puddles", "freqwave", "fire")
+
+
+def test_each_new_effect_wins_the_scene_it_was_built_for():
+    """A candidate nobody ever picks is dead weight in the shortlist."""
+    cases = {
+        # calm, no pulse -> the ambient swell
+        "pacifica": _f(energy=0.15, dialogue=0.9, onset_rate=0.0, brightness=0.1),
+        # a strong rhythm -> the sparse hits
+        "puddles": _f(energy=0.6, onset_rate=1.0, dialogue=0.0, brightness=0.3),
+        # loud and dark -> fire
+        "fire": _f(energy=1.0, onset_rate=0.2, dialogue=0.0, brightness=0.0),
+    }
+    for want, features in cases.items():
+        scores = score_candidates(features, WIDE)
+        assert max(scores, key=scores.get) == want, (want, sorted(
+            scores.items(), key=lambda kv: -kv[1])[:3])
+
+
+def test_puddles_and_pixelwave_overlap():
+    """Documents the tie above, so a future feature that separates them fails
+    this test loudly rather than silently changing behaviour."""
+    f = _f(energy=0.6, onset_rate=1.0)
+    scores = score_candidates(f)
+    assert abs(scores["puddles"] - scores["pixelwave"]) < 0.1
+
+
+def test_new_effects_are_scored_at_all():
+    scores = score_candidates(_f(energy=0.5, onset_rate=0.5))
+    for name in ("pacifica", "puddles", "freqwave", "fire"):
+        assert name in scores, name

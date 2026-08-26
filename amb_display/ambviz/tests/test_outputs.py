@@ -136,3 +136,28 @@ def test_unknown_backend():
     s.output.device = "carrier-pigeon"
     with pytest.raises(ValueError, match="unknown output.device"):
         make_output(s)
+
+
+def test_fractional_values_round_rather_than_truncate(wire):
+    """A pixel at 0.9 is faintly lit, not off.
+
+    ``astype(int)`` truncates toward zero, costing up to a full step
+    everywhere. That is invisible near 255 but not at the luminance 1-3 an
+    effect sits at during a quiet passage, where a step is a third of the
+    brightness -- and it turns sub-1.0 values fully black.
+    """
+    sock, settings = wire
+    out = make_output(settings(pixels=4))
+    out.send(np.array([[0.4, 0.9, 1.9, 2.6]] * 3, dtype=float))
+    payload = b"".join(drain(sock))
+    assert [payload[i * 4 + 1] for i in range(4)] == [0, 1, 2, 3]
+
+
+def test_rounding_does_not_break_the_diff(wire):
+    """Values that round to the same byte must not retransmit."""
+    sock, settings = wire
+    out = make_output(settings(pixels=2))
+    out.send(np.full((3, 2), 10.4))
+    drain(sock)
+    out.send(np.full((3, 2), 10.4999))
+    assert drain(sock) == []

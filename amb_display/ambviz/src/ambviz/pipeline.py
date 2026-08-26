@@ -23,6 +23,11 @@ _REBUILDS_EFFECT = {
 }
 
 
+#: Onset-density envelope value treated as "as busy as music gets". The
+#: envelope is an ExpFilter of a 0/1 beat flag, so it saturates well below 1.
+ONSET_RATE_FULL_SCALE = 0.5
+
+
 class Visualizer:
     """Turns raw audio frames into strip pixels.
 
@@ -288,7 +293,22 @@ class Visualizer:
         # A fight scene is loud, wide and full of transients; a dialogue scene is
         # none of those. Averaging the three normalised components is enough to
         # tell them apart without recognising anything.
-        rate_norm = self.onset_range.update(float(self.onset_rate.update(1.0 if beat else 0.0)))
+        # Two values, deliberately. ``rate_norm`` is range-adapted and feeds the
+        # ``energy`` composite below, where "relative to this film" is the right
+        # question. ``rate_raw`` is the absolute onset density and is what the
+        # director scores on: AdaptiveRange rescales whatever it is fed to fill
+        # 0-1, measured at 2.4x on real audio, and candidates are compared
+        # against each other so they need a scale that does not move.
+        rate_raw = float(self.onset_rate.update(1.0 if beat else 0.0))
+        rate_norm = self.onset_range.update(rate_raw)
+        # Fixed full scale, not an adaptive one. The envelope saturates near
+        # 0.5 on continuously percussive material (measured max 0.505 over 43 s
+        # of real audio), so half the 0-1 range would otherwise never be used
+        # and the onset-scored candidates could not compete. The point of the
+        # change was to stop the mapping moving with recent history, not to
+        # leave headroom unused: the same audio now always gives the same
+        # number.
+        rate_abs = float(np.clip(rate_raw / ONSET_RATE_FULL_SCALE, 0.0, 1.0))
         energy = float(np.clip(
             0.5 * self.level_range.update(slow)
             + 0.3 * (1.0 - narrow)
@@ -310,7 +330,7 @@ class Visualizer:
             flux=flux, t=elapsed, silent=False,
             centroid=centroid, centroid_hz=centroid_hz, dialogue=dialogue, slow=slow,
             spread=spread, energy=energy, scene=scene,
-            onset_rate=rate_norm, brightness=float(1.0 - narrow),
+            onset_rate=rate_abs, brightness=float(1.0 - narrow),
         )
         return self._to_strip(self.effect.render(self.features))
 

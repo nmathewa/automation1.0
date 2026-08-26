@@ -106,3 +106,105 @@ def test_interpolate_resizes_both_ways():
     assert len(interpolate(np.arange(3.0), 10)) == 10
     same = np.arange(5.0)
     assert interpolate(same, 5) is same
+
+
+# ── the effects added in wave 2 ──────────────────────────────────────────────
+def _render(name, frames, **feature_kw):
+    """Run one effect for N frames and return the stacked output."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    settings = Settings.load(overrides={"output": {"pixels": 60}})
+    effect = EFFECTS[name](settings, 60)
+    out = []
+    for i in range(frames):
+        kw = {k: (v(i) if callable(v) else v) for k, v in feature_kw.items()}
+        kw.setdefault("mel", np.linspace(0.2, 0.8, settings.dsp.fft_bins))
+        out.append(effect.render(Features(volume=0.3, t=i / 60.0, **kw)))
+    return np.array(out)
+
+
+def test_pacifica_swells_with_level_and_never_goes_fully_dark():
+    """The ambient candidate: a strip that drops to black during a quiet line
+    is more distracting than one that keeps moving."""
+    quiet = _render("pacifica", 400, energy=0.02)
+    loud = _render("pacifica", 400, energy=0.95)
+    assert loud[200:].mean() > quiet[200:].mean() * 2
+    assert quiet[200:].max() > 0, "quiet scene went completely black"
+
+
+def test_puddles_decays_to_nothing_without_onsets():
+    """The sparse candidate is the only one that is meant to go dark."""
+    lit = _render("puddles", 60, beat=True, onset=0.9, centroid=0.5)
+    assert lit.max() > 100, "no puddle was ever dropped"
+    silent = _render("puddles", 400, beat=False, onset=0.0)
+    assert silent[-1].max() < 1.0
+
+
+def test_freqwave_colours_the_whole_strip_by_pitch():
+    """Its whole point: hue comes from frequency, not from position."""
+    low = _render("freqwave", 200, energy=0.8, centroid_hz=250.0)[-1]
+    high = _render("freqwave", 200, energy=0.8, centroid_hz=9000.0)[-1]
+    # Uniform along the strip: every pixel shares one hue.
+    for frame in (low, high):
+        lit = frame[:, frame.max(axis=0) > 20]
+        ratio = lit / (lit.max(axis=0) + 1e-9)
+        assert ratio.std(axis=1).max() < 0.05, "hue varied along the strip"
+    # And the two pitches are visibly different colours.
+    def norm(f):
+        return f.mean(axis=1) / (f.mean(axis=1).sum() + 1e-9)
+    assert np.abs(norm(low) - norm(high)).sum() > 0.2
+
+
+def test_fire_stays_alight_under_energy_and_gutters_without_it():
+    hot = _render("fire", 400, energy=0.9, onset=0.5, beat=lambda i: i % 8 == 0)
+    cold = _render("fire", 400, energy=0.0, onset=0.0, beat=False)
+    assert hot[200:].mean() > cold[200:].mean() * 3
+    assert hot[200:].max() > 150, "flame never got hot"
+
+
+def test_nothing_animates_on_frozen_audio():
+    """The property that caught freqwave: it drew a hue over a travelling sine
+    of fixed speed, so with the same frame fed repeatedly it still produced 56%
+    of its normal motion while every other effect produced none. Motion that
+    survives frozen audio is motion the music does not control."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    settings = Settings.load(overrides={"output": {"pixels": 60}})
+    mel = np.linspace(0.2, 0.8, settings.dsp.fft_bins)
+    # Exempt, and each for a stated reason rather than to make the test pass:
+    #   auto      delegates to whichever animation it picked
+    #   pacifica  is a slow ambient drift by construction
+    #   fire      inherits Fire2012's random cooling and sparks, so it flickers
+    #             whatever the audio does. Only its spark rate and cooling are
+    #             music-driven. It shares freqwave's flaw and is kept out of
+    #             the default shortlist partly for that reason.
+    exempt = {"auto", "pacifica", "fire"}
+    for name in sorted(set(EFFECTS) - exempt):
+        effect = EFFECTS[name](settings, 60)
+        out = [effect.render(Features(mel=np.copy(mel), volume=0.3, energy=0.5,
+                                      centroid=0.4, centroid_hz=900.0, t=i / 60.0))
+               for i in range(240)]
+        settled = np.array(out[120:])
+        moved = np.abs(np.diff(settled, axis=0)).mean()
+        assert moved < 0.5, f"{name} moves {moved:.3f} on frozen audio"
+
+
+def test_puddles_fades_faster_when_the_music_is_busy():
+    """A fixed decay held a puddle for ~3 s whatever was playing, so hits
+    smeared together during a busy passage and the strip stopped reading as
+    separate events."""
+    lit = dict(beat=True, onset=0.9, centroid=0.5)
+    quiet = _render("puddles", 300, energy=lambda i: 0.0, **lit)
+    busy = _render("puddles", 300, energy=lambda i: 1.0, **lit)
+    # Same hits, same rate -- only the pace of the fade differs.
+    assert busy[-1].mean() < quiet[-1].mean(), "busy audio did not clear faster"
+
+
+def test_freqwave_does_not_depend_on_the_classifier():
+    """It sat permanently a third short with 0.30 of its weight on a YAMNet
+    term, and took the strip for 0% of 43 s of real audio."""
+    from ambviz.director import score_candidates
+    from ambviz.features import Features
+    # No scene information at all -- the default Scene is unavailable.
+    f = Features(mel=np.zeros(24), volume=0.4, brightness=0.9, energy=0.9)
+    assert score_candidates(f)["freqwave"] > 0.8

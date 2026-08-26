@@ -254,12 +254,76 @@ class Mood:
     The model is the better judge of "is this speech", but it works on ~1 s
     windows, so it is blended rather than trusted outright. 0 ignores it."""
 
-    animations: tuple[str, ...] = ("bars", "energy", "scroll", "spectrum", "waterfall")
+    animations: tuple[str, ...] = ("bars", "energy", "spectrum", "freqwave", "puddles")
     """Which animations "auto" may choose between, in no particular order.
 
     A setting rather than a fixed list so the shortlist can change without a
     code edit. Names must exist in the effect registry; unknown ones are
-    rejected at load rather than silently ignored."""
+    rejected at load rather than silently ignored.
+
+    ``waterfall`` was dropped first. Over 43 s of real audio it had the
+    joint-highest mean score (0.519) *and* a p95 frame-to-frame jitter of
+    0.323 -- more than twice ``switch_margin``, so hysteresis could not filter
+    it and single noisy frames won switches that dwell then held for eight
+    seconds. That was the scroll-waterfall-scroll-waterfall oscillation.
+
+    ``pacifica`` replaced it and was then dropped too: its layers drift once
+    every 18-42 s under a 2.8 s level filter, which reads as a still image
+    rather than as a swell. That is tuning, not a defect -- the speeds would
+    need roughly a fivefold increase to be worth another try.
+
+    ``scroll`` went with it. It is scored 0.55 on ``onset_rate``, and that
+    feature is passed through an ``AdaptiveRange`` that stretches a
+    near-constant input to fill 0-1 -- measured at 0.92 on a phase-continuous
+    held chord whose raw rate was 0.51. Scroll therefore wins on sustained
+    material it does not suit.
+
+    ``freqwave`` and ``puddles`` take their places, covering the pitch and
+    sparse families that nothing else in the shortlist covers."""
+
+    score_smoothing: float = 2.0
+    """Seconds of smoothing applied to each candidate's score before comparing.
+
+    Without this the selector is a coin flip. Scores are recomputed per frame
+    from features that jitter, and measured over 43 s of real audio no
+    candidate ever held the lead for as long as one second -- longest unbroken
+    spell as top scorer was 0.9 s for the winner and 0.0-0.4 s for the rest,
+    against an eight second dwell. So whichever candidate happened to be ahead
+    at the instant the dwell expired won, which is why animations switched
+    without the audio changing and why some never appeared at all.
+
+    Smoothing is what makes ``switch_margin`` and ``switch_dwell`` mean
+    something: they can only arbitrate between candidates whose ordering is
+    stable for longer than a frame.
+
+    The honest cost, measured on the same clip: with the noise gone the
+    ordering mostly stops changing, so switches drop from 5 to 1 and the strip
+    settles on the genuine winner for long stretches. The pre-smoothing
+    variety was churn, not responsiveness -- candidates were being picked at
+    random moments, which looked lively and meant nothing. If the settled
+    behaviour is too static the knob to reach for is this one, downward."""
+
+    change_threshold: float = 0.25
+    """How far the audio's character must move before a switch is considered.
+
+    Distance between the current smoothed feature vector (energy, onset rate,
+    brightness, dialogue) and the one captured at the last switch. On the
+    43 s reference clip 0.25 fires about every 11 seconds; a film's dialogue
+    scene holds one anchor for minutes.
+
+    This replaced hysteresis-on-scores as the thing that decides *whether* to
+    switch. Hand-written suitability scores turned out to be undependable at
+    that job: all candidates sit within ~0.2 of each other while individual
+    scores move more than that with the material, so every weighting produced
+    some starved animation and a winner locked to the song. Scores now only
+    rank what comes next -- they never re-elect the incumbent."""
+
+    max_dwell: float = 45.0
+    """Switch anyway after this many seconds, however static the audio.
+
+    The rotation guarantee: with change detection alone a single long scene
+    would hold one animation forever, and starvation was the complaint that
+    forced this design."""
 
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.
@@ -455,6 +519,10 @@ class Settings:
             problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
         if not 0.0 <= m.switch_margin <= 1.0:
             problems.append("mood.switch_margin must be between 0.0 and 1.0")
+        if m.change_threshold <= 0.0:
+            problems.append("mood.change_threshold must be positive")
+        if m.max_dwell < m.switch_dwell:
+            problems.append("mood.max_dwell must be at least mood.switch_dwell")
         if not 0.0 <= m.scene_weight <= 1.0:
             problems.append("mood.scene_weight must be between 0.0 and 1.0")
         if m.scene_interval <= 0:
