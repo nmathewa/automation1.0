@@ -455,10 +455,14 @@ class FreqwaveEffect(Effect):
 
     Every other effect in the library derives hue from *position*. This one
     derives it from pitch, so a bassline and a cymbal are different colours
-    everywhere rather than in different places. A slow travelling brightness
-    wave keeps it from being a flat wash.
+    everywhere rather than in different places.
 
-    Behaviour follows WLED-SR's ``Freqwave``; implementation is our own.
+    The first version drew that hue over a travelling sine of fixed speed. It
+    looked plain, and measurement said why: with the audio frozen -- the same
+    frame fed repeatedly -- it still produced 56% of its normal motion, where
+    every other effect produces exactly zero. The only thing the music
+    controlled was overall brightness. The shape now comes from the spectrum,
+    so the pitch-hue idea survives but nothing moves unless the audio does.
     """
 
     clone_across_nodes = True
@@ -468,7 +472,8 @@ class FreqwaveEffect(Effect):
         # Hue is the whole picture here, so it is smoothed harder than a level
         # would be -- an unsteady centroid would swing the entire strip.
         self.hue = ExpFilter(0.5, alpha_decay=0.05, alpha_rise=0.05)
-        self.level = ExpFilter(0.01, alpha_decay=0.10, alpha_rise=0.60)
+        self.bands = ExpFilter(np.tile(0.01, settings.dsp.fft_bins),
+                               alpha_decay=0.10, alpha_rise=0.65)
 
     def render(self, features: Features) -> np.ndarray:
         dsp = self.settings.dsp
@@ -478,10 +483,12 @@ class FreqwaveEffect(Effect):
         pos = (np.log2(max(features.centroid_hz, lo)) - np.log2(lo)) / (np.log2(hi) - np.log2(lo))
         hue = float(self.hue.update(float(np.clip(pos, 0.0, 1.0))))
 
-        level = float(np.clip(self.level.update(features.energy), 0.0, 1.0))
-        x = np.linspace(0.0, 1.0, self.width)
-        wave = 0.65 + 0.35 * np.sin(2.0 * np.pi * (x * 1.5 - features.t * 0.35))
-        value = np.clip(level * wave, 0.0, 1.0)
+        levels = np.clip(self.bands.update(np.copy(features.mel)), 0.0, 1.5)
+        value = np.clip(interpolate(levels, self.width), 0.0, 1.0)
+        # A hit lifts the whole strip, since there is no position here for it
+        # to land on.
+        if features.onset > 0.0:
+            value = np.clip(value + 0.35 * features.onset, 0.0, 1.0)
         return _hsv_to_rgb(np.full(self.width, hue * 0.85), 0.95, value) * 255.0
 
 
