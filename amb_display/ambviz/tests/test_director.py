@@ -20,20 +20,22 @@ def auto(**mood):
 
 # ── scoring, without any audio ───────────────────────────────────────────────
 def test_a_quiet_centred_scene_picks_the_calmest_option():
-    """Was ``spectrum`` until ``pacifica`` joined the shortlist -- spectrum was
-    only ever the calmest option available, not a calm one. A quiet centred
-    scene is exactly what the ambient candidate exists for."""
+    """``spectrum`` again. It briefly became ``pacifica``, but pacifica drifts
+    once every 18-42 s under a 2.8 s level filter, so on screen it neither
+    moved nor tracked the music and it left the shortlist. Spectrum is the
+    calmest option *available*, which is not the same as a calm one -- the
+    shortlist has no ambient member until something is tuned to be one."""
     quiet = Features(mel=np.zeros(24), volume=0.1, dialogue=0.95, energy=0.1)
     scores = score_candidates(quiet, Settings.load().mood.animations)
-    assert max(scores, key=lambda k: scores[k]) == "pacifica"
-    assert scores["pacifica"] > scores["spectrum"]
+    assert max(scores, key=lambda k: scores[k]) == "spectrum"
 
 
 def test_beats_prefer_a_pulse_driven_animation():
     beat = Features(mel=np.zeros(24), volume=0.6, dialogue=0.1, energy=0.7,
                     onset_rate=0.9, brightness=0.6)
     scores = score_candidates(beat, Settings.load().mood.animations)
-    assert scores["scroll"] > scores["spectrum"]
+    # puddles is the pulse-driven member now that scroll has left the list.
+    assert scores["puddles"] > scores["spectrum"]
 
 
 def test_wide_loud_content_prefers_a_band_display():

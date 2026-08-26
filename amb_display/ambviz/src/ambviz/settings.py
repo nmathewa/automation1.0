@@ -254,29 +254,32 @@ class Mood:
     The model is the better judge of "is this speech", but it works on ~1 s
     windows, so it is blended rather than trusted outright. 0 ignores it."""
 
-    animations: tuple[str, ...] = ("bars", "energy", "scroll", "spectrum", "pacifica")
+    animations: tuple[str, ...] = ("bars", "energy", "spectrum", "freqwave", "puddles")
     """Which animations "auto" may choose between, in no particular order.
 
     A setting rather than a fixed list so the shortlist can change without a
     code edit. Names must exist in the effect registry; unknown ones are
     rejected at load rather than silently ignored.
 
-    ``waterfall`` was dropped from the default. Over 43 s of real audio it had
-    the joint-highest mean score (0.519, so it won often) *and* a p95
-    frame-to-frame jitter of 0.323 -- more than twice ``switch_margin``, so
-    hysteresis could not filter it: single noisy frames won switches that dwell
-    then held for eight seconds, giving the scroll-waterfall-scroll-waterfall
-    oscillation. It was also the dimmest effect in the library, 4.9/255 peak.
+    ``waterfall`` was dropped first. Over 43 s of real audio it had the
+    joint-highest mean score (0.519) *and* a p95 frame-to-frame jitter of
+    0.323 -- more than twice ``switch_margin``, so hysteresis could not filter
+    it and single noisy frames won switches that dwell then held for eight
+    seconds. That was the scroll-waterfall-scroll-waterfall oscillation.
 
-    ``pacifica`` replaces it at a near-identical mean (0.515) and roughly half
-    the jitter (0.164), and is the only calm candidate in the shortlist --
-    without it a quiet scene falls to a spectral display, since ``cinema`` is
-    not in the default list either. On the same clip that halves the switch
-    count from 5 to 4 and pacifica takes 39% of the time, close to the 44%
-    waterfall had.
+    ``pacifica`` replaced it and was then dropped too: its layers drift once
+    every 18-42 s under a 2.8 s level filter, which reads as a still image
+    rather than as a swell. That is tuning, not a defect -- the speeds would
+    need roughly a fivefold increase to be worth another try.
 
-    0.164 is still marginally over ``switch_margin``. Smoothing the scores
-    before the argmax is the real fix and is not done yet."""
+    ``scroll`` went with it. It is scored 0.55 on ``onset_rate``, and that
+    feature is passed through an ``AdaptiveRange`` that stretches a
+    near-constant input to fill 0-1 -- measured at 0.92 on a phase-continuous
+    held chord whose raw rate was 0.51. Scroll therefore wins on sustained
+    material it does not suit.
+
+    ``freqwave`` and ``puddles`` take their places, covering the pitch and
+    sparse families that nothing else in the shortlist covers."""
 
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.
