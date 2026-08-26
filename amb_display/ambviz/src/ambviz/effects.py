@@ -436,7 +436,14 @@ class PuddlesEffect(Effect):
         self.rng = np.random.default_rng(0x9E3779B9)
 
     def render(self, features: Features) -> np.ndarray:
-        self.pixels *= self.settings.effect.scroll_decay
+        # Pace the fade off the music. A fixed decay of 0.98 holds a puddle for
+        # roughly three seconds whatever is playing, so during a busy passage
+        # hits smear into each other and the strip stops reading as separate
+        # events -- which is the whole point of this effect. Busy audio now
+        # clears the strip in well under a second and a quiet passage lets a
+        # puddle linger.
+        pace = 0.5 + 4.0 * float(max(features.energy, features.onset_rate))
+        self.pixels *= self.settings.effect.scroll_decay ** pace
         if features.beat and not features.silent:
             strength = 0.4 + 0.6 * features.onset
             size = int(np.clip(1 + strength * self.width / 5, 1, self.width))

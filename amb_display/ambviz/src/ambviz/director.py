@@ -86,8 +86,12 @@ def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dic
         "puddles": 0.60 * f.onset_rate + 0.25 * percussive + 0.15 * f.energy,
         # Hue from pitch rather than position: earns its place when the
         # spectrum moves, which is what brightness tracks.
-        "freqwave": 0.40 * f.brightness + 0.30 * f.energy
-                    + 0.30 * max(electronic, sustained),
+        #
+        # Scored from DSP only. With 0.30 of its weight on a classifier term
+        # this sat permanently a third short whenever YAMNet was quiet or
+        # absent, and took the strip for 0% of 43 s -- the trap this module's
+        # own docstring warns about, walked straight into.
+        "freqwave": 0.55 * f.brightness + 0.45 * f.energy,
         # Warm and dark, so it suits weight at the bottom of the spectrum.
         "fire": 0.45 * f.energy + 0.30 * driven + 0.25 * (1.0 - f.brightness),
         # Remaining library members, scored so a custom shortlist still works.

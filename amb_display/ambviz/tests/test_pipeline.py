@@ -187,3 +187,24 @@ def test_nothing_animates_on_frozen_audio():
         settled = np.array(out[120:])
         moved = np.abs(np.diff(settled, axis=0)).mean()
         assert moved < 0.5, f"{name} moves {moved:.3f} on frozen audio"
+
+
+def test_puddles_fades_faster_when_the_music_is_busy():
+    """A fixed decay held a puddle for ~3 s whatever was playing, so hits
+    smeared together during a busy passage and the strip stopped reading as
+    separate events."""
+    lit = dict(beat=True, onset=0.9, centroid=0.5)
+    quiet = _render("puddles", 300, energy=lambda i: 0.0, **lit)
+    busy = _render("puddles", 300, energy=lambda i: 1.0, **lit)
+    # Same hits, same rate -- only the pace of the fade differs.
+    assert busy[-1].mean() < quiet[-1].mean(), "busy audio did not clear faster"
+
+
+def test_freqwave_does_not_depend_on_the_classifier():
+    """It sat permanently a third short with 0.30 of its weight on a YAMNet
+    term, and took the strip for 0% of 43 s of real audio."""
+    from ambviz.director import score_candidates
+    from ambviz.features import Features
+    # No scene information at all -- the default Scene is unavailable.
+    f = Features(mel=np.zeros(24), volume=0.4, brightness=0.9, energy=0.9)
+    assert score_candidates(f)["freqwave"] > 0.8
