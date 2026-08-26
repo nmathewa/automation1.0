@@ -320,6 +320,19 @@
         </div>
       </div>
       <div class="ctl">
+        <span>Auto switching <small id="drift-note"></small></span>
+        <div class="row">
+          <input type="range" id="ctl-change" min="0.05" max="0.8" step="0.01"
+                 aria-label="Change sensitivity: character distance that triggers a switch">
+          <output id="out-change">—</output>
+        </div>
+        <div class="row">
+          <input type="range" id="ctl-maxdwell" min="10" max="180" step="5"
+                 aria-label="Max dwell: seconds before a switch is forced">
+          <output id="out-maxdwell">—</output>
+        </div>
+      </div>
+      <div class="ctl">
         <span>Mel bands</span>
         <div class="row">
           <input type="range" id="ctl-bins" min="4" max="64" step="1">
@@ -902,6 +915,15 @@
     if (engine.dialogue !== undefined) {
       $("mood-note").textContent = engine.dialogue > 0.85 ? "— speech detected" : "";
     }
+    // How close the audio's character is to triggering a switch, live.
+    const dir = engine.director;
+    if (dir && dir.drift !== undefined) {
+      const th = Number($("ctl-change").value) || 0.25;
+      $("drift-note").textContent =
+        `— ${dir.current || ""} · drift ${dir.drift.toFixed(2)}/${th.toFixed(2)} · ${dir.switches} switches`;
+    } else {
+      $("drift-note").textContent = "";
+    }
     if (editing !== "minf") $("ctl-minf").value = engine.min_frequency;
     if (editing !== "maxf") $("ctl-maxf").value = engine.max_frequency;
     $("spectrum-range").textContent = `${engine.min_frequency}–${engine.max_frequency} Hz`;
@@ -929,6 +951,12 @@
         $("out-hue-rate").textContent = (1 / cfg.mood.hue_rate).toFixed(1) + "s/turn";
       }
       if (force || editing !== "detail") $("ctl-detail").value = cfg.mood.detail;
+      if (cfg.mood.change_threshold !== undefined) {
+        if (force || editing !== "change") $("ctl-change").value = cfg.mood.change_threshold;
+        $("out-change").textContent = Number(cfg.mood.change_threshold).toFixed(2);
+        if (force || editing !== "maxdwell") $("ctl-maxdwell").value = cfg.mood.max_dwell;
+        $("out-maxdwell").textContent = `${Math.round(cfg.mood.max_dwell)}s`;
+      }
       if (force || editing !== "damp") $("ctl-damp").value = cfg.mood.dialogue_damping;
     }
     if (force || editing !== "bins") {
@@ -968,6 +996,12 @@
     (v) => ($("out-hue-rate").textContent = (1 / Number(v)).toFixed(1) + "s/turn"),
     (v) => ({ mood: { hue_rate: Number(v) } }));
   bindLive($("ctl-detail"), "detail", () => {}, (v) => ({ mood: { detail: Number(v) } }));
+  bindLive($("ctl-change"), "change",
+    (v) => ($("out-change").textContent = Number(v).toFixed(2)),
+    (v) => ({ mood: { change_threshold: Number(v) } }));
+  bindLive($("ctl-maxdwell"), "maxdwell",
+    (v) => ($("out-maxdwell").textContent = `${Math.round(v)}s`),
+    (v) => ({ mood: { max_dwell: Number(v) } }));
   bindLive($("ctl-damp"), "damp", () => {}, (v) => ({ mood: { dialogue_damping: Number(v) } }));
   bindLive($("ctl-vocal"), "vocal",
     (v) => ($("out-vocal").textContent = Number(v).toFixed(2)),
