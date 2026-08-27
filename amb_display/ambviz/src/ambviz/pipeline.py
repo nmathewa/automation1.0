@@ -7,7 +7,7 @@ import time
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
-from ambviz.dsp import EPS, AdaptiveRange, ExpFilter, MelBank
+from ambviz.dsp import EPS, AdaptiveRange, ExpFilter, HarmonicPercussive, MelBank
 from ambviz.effects import EFFECTS
 from ambviz.features import Features, OnsetDetector
 from ambviz.scene import Scene, try_create
@@ -16,6 +16,7 @@ from ambviz.settings import Settings
 # Which settings force which object to be rebuilt when changed at runtime.
 _REBUILDS_MEL_BANK = {"dsp.min_frequency", "dsp.max_frequency", "dsp.fft_bins"}
 _REBUILDS_MEL_FILTERS = {"dsp.fft_bins", "smoothing.mel_gain", "smoothing.mel_smoothing"}
+_REBUILDS_HPSS = {"dsp.hpss_frames", "dsp.hpss_kernel"}
 _REBUILDS_EFFECT = {
     "effect.name", "effect.mirror", "dsp.fft_bins",
     "smoothing.red", "smoothing.green", "smoothing.blue",
@@ -92,6 +93,21 @@ class Visualizer:
         self.slow_level = ExpFilter(0.0, alpha_decay=alpha, alpha_rise=alpha * 3)
         self._speech_mask: np.ndarray | None = None
 
+        # Sized to the padded rfft, which is what it is fed. Restart-only
+        # settings decide that size, so it never changes under a live patch --
+        # but update() reshapes on a mismatch anyway rather than trusting that.
+        self.hpss = HarmonicPercussive(
+            self.mel_bank.n_fft_bands,
+            frames=settings.dsp.hpss_frames,
+            kernel=settings.dsp.hpss_kernel,
+        )
+        # Same treatment as onset_rate: the per-frame ratio is near-binary, so
+        # what the director wants is its density over a passage, not its value
+        # on one frame.
+        alpha_p = float(np.clip(1.0 / max(settings.dsp.percussive_smoothing * fps, 1.0),
+                                1e-4, 0.5))
+        self.percussive = ExpFilter(0.5, alpha_decay=alpha_p, alpha_rise=alpha_p)
+
         self.onsets = OnsetDetector(
             sensitivity=settings.dsp.onset_sensitivity,
             refractory=settings.dsp.onset_refractory,
@@ -133,6 +149,27 @@ class Visualizer:
             self._build_mel_filters()
         if touched & _REBUILDS_EFFECT:
             self._build_effect()
+        if "mood.animations" in touched:
+            # Not a full effect rebuild: that would discard every cached
+            # animation's state and show a seam on a change that need not have
+            # one. Directors retune in place; anything else ignores the list.
+            retune = getattr(self.effect, "retune", None)
+            if retune is not None:
+                retune(tuple(self.settings.mood.animations))
+        if touched & _REBUILDS_HPSS:
+            self.hpss = HarmonicPercussive(
+                self.mel_bank.n_fft_bands,
+                frames=self.settings.dsp.hpss_frames,
+                kernel=self.settings.dsp.hpss_kernel,
+            )
+        if touched & {"dsp.percussive_smoothing"}:
+            a = float(np.clip(
+                1.0 / max(self.settings.dsp.percussive_smoothing * self.settings.audio.fps, 1.0),
+                1e-4, 0.5))
+            # Keep the current value: rebuilding at 0.5 would inject a step into
+            # the character vector and read as a scene change.
+            self.percussive = ExpFilter(float(self.percussive.value),
+                                        alpha_decay=a, alpha_rise=a)
 
     def _build_mel_filters(self) -> None:
         sm = self.settings.smoothing
@@ -176,6 +213,7 @@ class Visualizer:
             "slow": round(float(self.features.slow), 4),
             "spread": round(float(self.features.spread), 1),
             "energy": round(float(self.features.energy), 3),
+            "percussive": round(float(self.features.percussive), 3),
             "scene": self.features.scene.to_dict(),
             "mood": self._mood_snapshot(),
             "director": (self.effect.state()
@@ -231,7 +269,8 @@ class Visualizer:
         self.silent = self.volume < self.settings.audio.min_volume
         if self.silent:
             self.mel = np.zeros_like(self.mel)
-            self.features = Features(mel=self.mel, volume=self.volume, t=elapsed, silent=True)
+            self.features = Features(mel=self.mel, volume=self.volume, t=elapsed,
+                                     silent=True, percussive=float(self.percussive.value))
             return np.zeros((3, self.n_pixels))
 
         n = len(data)
@@ -277,6 +316,15 @@ class Visualizer:
         if beat:
             self.beats += 1
 
+        # HPSS on the *linear* spectrum, not the mel one. A mel band is already
+        # a weighted average over many FFT bins, which smears the narrow ridge a
+        # harmonic makes into something as wide as a drum -- exactly the
+        # distinction being measured. Running it here costs 130 us against a
+        # 16.7 ms frame, so the cheaper axis is not worth the blunter answer.
+        harmonic, percussive = self.hpss.update(spectrum)
+        percussive_now = HarmonicPercussive.ratio(harmonic, percussive)
+        percussive_rate = float(self.percussive.update(percussive_now))
+
         # Hue follows the arrangement rather than the vocal line.
         centroid_hz = self._centroid(self._normalise(mel_tonal))
         centroid = self.centroid_range.update(centroid_hz)
@@ -318,11 +366,24 @@ class Visualizer:
             # What is playing says more about how energetic to be than the
             # running statistics do. Percussion and electronic music want a
             # spectrum; an orchestra wants a wash, however loud it gets.
-            w = self.settings.mood.scene_weight
             driven = max(scene.get("percussion"), scene.get("electronic"),
                          scene.get("loud"))
             sustained = max(scene.get("orchestral"), scene.get("acoustic"))
             bias = float(np.clip(0.5 + 0.5 * (driven - sustained), 0.0, 1.0))
+            # Weighted by how strong an opinion the classifier actually holds.
+            #
+            # ``bias`` is built from the *difference* of two group scores, so
+            # when neither group fires it is not a judgement of 0.5, it is a
+            # shrug that happens to be worth 0.5. Blending a flat 0.7 of that
+            # in pinned energy near the middle whatever the audio did: measured
+            # live, YAMNet reported ``music`` 0.5 with every other group at 0.0
+            # while energy read 0.454 against a volume of 0.009. That constant
+            # is a quarter of the vector the director switches on, which is a
+            # large part of why it switched on the clock instead of on the
+            # music. Scaling by the strongest musical group means an absent or
+            # undecided classifier now changes nothing at all.
+            opinion = max(driven, sustained)
+            w = self.settings.mood.scene_weight * opinion
             energy = float(np.clip((1 - w) * energy + w * bias, 0.0, 1.0))
 
         self.features = Features(
@@ -331,6 +392,7 @@ class Visualizer:
             centroid=centroid, centroid_hz=centroid_hz, dialogue=dialogue, slow=slow,
             spread=spread, energy=energy, scene=scene,
             onset_rate=rate_abs, brightness=float(1.0 - narrow),
+            percussive=percussive_rate,
         )
         return self._to_strip(self.effect.render(self.features))
 

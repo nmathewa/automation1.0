@@ -123,15 +123,6 @@ def _render(name, frames, **feature_kw):
     return np.array(out)
 
 
-def test_pacifica_swells_with_level_and_never_goes_fully_dark():
-    """The ambient candidate: a strip that drops to black during a quiet line
-    is more distracting than one that keeps moving."""
-    quiet = _render("pacifica", 400, energy=0.02)
-    loud = _render("pacifica", 400, energy=0.95)
-    assert loud[200:].mean() > quiet[200:].mean() * 2
-    assert quiet[200:].max() > 0, "quiet scene went completely black"
-
-
 def test_puddles_decays_to_nothing_without_onsets():
     """The sparse candidate is the only one that is meant to go dark."""
     lit = _render("puddles", 60, beat=True, onset=0.9, centroid=0.5)
@@ -173,12 +164,11 @@ def test_nothing_animates_on_frozen_audio():
     mel = np.linspace(0.2, 0.8, settings.dsp.fft_bins)
     # Exempt, and each for a stated reason rather than to make the test pass:
     #   auto      delegates to whichever animation it picked
-    #   pacifica  is a slow ambient drift by construction
     #   fire      inherits Fire2012's random cooling and sparks, so it flickers
     #             whatever the audio does. Only its spark rate and cooling are
     #             music-driven. It shares freqwave's flaw and is kept out of
     #             the default shortlist partly for that reason.
-    exempt = {"auto", "pacifica", "fire"}
+    exempt = {"auto", "fire"}
     for name in sorted(set(EFFECTS) - exempt):
         effect = EFFECTS[name](settings, 60)
         out = [effect.render(Features(mel=np.copy(mel), volume=0.3, energy=0.5,
@@ -208,3 +198,75 @@ def test_freqwave_does_not_depend_on_the_classifier():
     # No scene information at all -- the default Scene is unavailable.
     f = Features(mel=np.zeros(24), volume=0.4, brightness=0.9, energy=0.9)
     assert score_candidates(f)["freqwave"] > 0.8
+
+
+# ── animation speed is a real speed, not the frame rate ──────────────────────
+def _travelled(name, fps, seconds=2.0, **overrides):
+    """Where the leading edge of a travelling effect has reached."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    s = Settings.load(overrides={"output": {"pixels": 120}, "audio": {"fps": fps},
+                                 "effect": overrides})
+    e = EFFECTS[name](s, 120)
+    mel = np.linspace(0.2, 0.8, s.dsp.fft_bins)
+    frames = int(seconds * fps)
+    for i in range(frames):
+        # pixelwave only writes on a beat, so the probe has to supply some.
+        out = e.render(Features(mel=np.copy(mel), volume=0.3, energy=0.5,
+                                onset_rate=0.5, t=i / fps,
+                                beat=(i % max(1, int(fps / 4)) == 0), onset=0.8))
+    lit = np.where(out.max(axis=0) > 1.0)[0]
+    return int(lit.max()) if len(lit) else 0
+
+
+@pytest.mark.parametrize("name", ["scroll", "pixelwave", "waterfall"])
+def test_travel_is_measured_in_seconds_not_frames(name):
+    """One pixel per frame is not a speed, it is the frame rate in disguise:
+    the same effect crossed a strip twice as fast at 120 fps as at 60."""
+    slow = _travelled(name, 30)
+    fast = _travelled(name, 120)
+    assert abs(slow - fast) <= max(6, 0.25 * max(slow, fast, 1))
+
+
+@pytest.mark.parametrize("name", ["scroll", "pixelwave", "waterfall"])
+def test_the_speed_control_actually_slows_travel(name):
+    assert _travelled(name, 60, speed=0.25) < _travelled(name, 60, speed=1.0)
+
+
+def test_slow_travel_still_moves():
+    """Rounding the fractional step away would freeze the effect entirely
+    below one pixel per frame."""
+    assert _travelled("scroll", 60, seconds=4.0, travel_pixels_per_second=3.0) > 0
+
+
+def test_cinema_wash_moves_on_its_own():
+    """A still gradient is not calm, it is inert -- it made the quiet end of
+    the library look like a fault.
+
+    Measured relative to the wash's own brightness, because the wash is dim by
+    design: an absolute threshold here just tests the level, not the motion.
+    Before the swell this read 0.00002; it is now 0.05 at any level.
+    """
+    for slow in (0.0, 0.5):
+        late = _render("cinema", 900, energy=0.05, dialogue=0.9,
+                       brightness=0.3, slow=slow)[400:]
+        moved = late.std(axis=0).max() / max(late.mean(), 1e-9)
+        assert moved > 0.02, f"wash never moves at slow={slow} ({moved:.5f})"
+
+
+def test_the_cinema_floor_does_not_flatten_the_wash():
+    """The floor is the trough, not the whole wash. Clamping at ``floor``
+    itself gave every pixel exactly that value and one even bar."""
+    late = _render("cinema", 900, energy=0.05, dialogue=0.9, brightness=0.9)[400:]
+    frame = late[-1].max(axis=0)
+    assert frame.max() - frame.min() > 0.02 * max(frame.mean(), 1e-9)
+
+
+def test_cinema_scale_follows_brightness():
+    """Brightness is what makes the wash belong to the music: narrow dark
+    material gets one long arch, wide bright material several ripples."""
+    def ripples(b):
+        f = _render("cinema", 900, energy=0.05, dialogue=0.9, brightness=b)[-1]
+        v = f.max(axis=0)
+        return int(np.sum(np.diff(np.sign(np.diff(v))) != 0))
+    assert ripples(0.95) > ripples(0.05)

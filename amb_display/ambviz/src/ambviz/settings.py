@@ -182,6 +182,30 @@ class Dsp:
     0.7-0.8 usually reads better, leaving a trace so the result does not sound
     -- or look -- hollow."""
 
+    hpss_frames: int = 9
+    """Trailing frames the harmonic median looks back over.
+
+    At 60 fps nine frames is 150 ms, so a partial must hold its bin for about
+    that long to count as sustained. Longer is a stricter test of "held" and
+    costs a little more; the window is forced odd, because an even one has no
+    single middle element."""
+
+    hpss_kernel: int = 17
+    """FFT bins the percussive median spans.
+
+    17 bins is about 366 Hz at the default 2048-point FFT, wide enough that a
+    single harmonic is erased by its neighbours but narrow enough that a real
+    broadband hit survives."""
+
+    percussive_smoothing: float = 3.0
+    """Seconds of smoothing on the percussive fraction.
+
+    The raw ratio is near-binary per frame -- measured 0.99 on a hit and 0.0
+    between -- because HPSS describes one frame, not a passage. Smoothed, it
+    becomes percussive *density*, which is what "how rhythmic is this music"
+    actually means: against a synthetic one-hit-in-four signal the smoothed
+    value settles at 0.248."""
+
     vocal_band: tuple[float, float] = (180.0, 5000.0)
     """Where suppression applies, in Hz.
 
@@ -267,10 +291,12 @@ class Mood:
     it and single noisy frames won switches that dwell then held for eight
     seconds. That was the scroll-waterfall-scroll-waterfall oscillation.
 
-    ``pacifica`` replaced it and was then dropped too: its layers drift once
-    every 18-42 s under a 2.8 s level filter, which reads as a still image
-    rather than as a swell. That is tuning, not a defect -- the speeds would
-    need roughly a fivefold increase to be worth another try.
+    ``pacifica`` replaced it, was dropped for the same kind of reason -- its
+    layers drift once every 18-42 s under a 2.8 s level filter, so it read as a
+    still image rather than as a swell -- and has since been removed from the
+    library altogether. Its one good idea, a wash built from several sine
+    layers at different scales, now lives in ``cinema`` where it is driven by
+    the audio rather than by the clock.
 
     ``scroll`` went with it. It is scored 0.55 on ``onset_rate``, and that
     feature is passed through an ``AdaptiveRange`` that stretches a
@@ -318,12 +344,32 @@ class Mood:
     some starved animation and a winner locked to the song. Scores now only
     rank what comes next -- they never re-elect the incumbent."""
 
+    change_hold: float = 1.5
+    """Seconds the drift must stay past ``change_threshold`` before switching.
+
+    Without it a single noisy frame is a scene change. Drift is built from
+    smoothed features, but smoothed is not still, and a momentary excursion
+    across the threshold committed the strip to a new animation for the whole
+    dwell -- switches that looked unprovoked because they *were*, the audio
+    having gone nowhere.
+
+    Requiring the excursion to persist costs a little latency on a real change
+    and rejects essentially every spurious one, because noise crosses briefly
+    and a scene change stays crossed."""
+
     max_dwell: float = 45.0
     """Switch anyway after this many seconds, however static the audio.
 
-    The rotation guarantee: with change detection alone a single long scene
-    would hold one animation forever, and starvation was the complaint that
-    forced this design."""
+    The rotation guarantee, and deliberately long. It was load-bearing when the
+    selector picked by rank, because a candidate that never scored second could
+    only ever reach the strip when this timer fired. Recency-ordered selection
+    distributes screen time on its own now, so this is a backstop rather than
+    the mechanism -- measured over 170 s of real audio, eleven of twelve
+    candidates ran for 3-11% of the time each.
+
+    Set it short and it becomes the mechanism again: the strip rotates on the
+    clock whatever the music does, which is the "switches for no reason"
+    complaint in a different costume."""
 
     switch_dwell: float = 8.0
     """Minimum seconds on one animation before another may take over.
@@ -332,9 +378,24 @@ class Mood:
     worse than one mediocre animation held steady."""
 
     switch_margin: float = 0.15
-    """How much better a candidate must score than the current animation.
+    """How wide a band below the leading candidate still counts as suitable.
 
-    Hysteresis: ties keep what is already on screen."""
+    Everything inside the band is a defensible next animation, so the one shown
+    least recently wins and the band is what buys variety. Widen it to rotate
+    through more of the shortlist, narrow it to always take the best-scoring
+    option.
+
+    It has to work this way because ranking alone cannot distribute screen
+    time. Measured over 75 s of real audio under the old rule -- pick the
+    best-scoring candidate other than the incumbent -- ``puddles`` led almost
+    every frame, so every switch away from it came straight back to it:
+    puddles 46% of the time, ``bars`` 10%, ``energy`` 0%. A candidate that is
+    never rank two is unreachable however long it runs, which is the starvation
+    the rotation guarantee was supposed to prevent and did not.
+
+    (Before that it meant something else entirely -- how much better a candidate
+    had to score before it could take over -- and was left unread when the rule
+    changed to switch on audio change rather than on score crossings.)"""
 
     crossfade: float = 1.2
     """Seconds to fade between animations. Effects carry internal state, so
@@ -360,6 +421,41 @@ class Effect:
 
     scroll_sigma: float = 0.2
     """Blur applied to the scroll trail."""
+
+    speed: float = 1.0
+    """Global multiplier on how fast every animation moves.
+
+    One knob for the whole library, because "too fast" was never about a single
+    effect. Most of them advanced their state once per *frame* -- a scroll
+    shifted one pixel, fire ran a cooling pass, a wave stepped along -- which
+    is not a speed but the frame rate in disguise, and it left the library
+    running at whatever 60 fps happened to produce. Motion is now measured in
+    seconds and this scales it.
+
+    Below 1.0 is calmer, above is busier. It changes rate only: animation phase
+    is integrated rather than derived from the clock, so turning this down mid
+    scene slows the motion without jumping it."""
+
+    travel_pixels_per_second: float = 16.0
+    """How fast ``scroll`` and ``pixelwave`` move light along the strip.
+
+    Both used to shift exactly one pixel per frame, which is not a speed at all
+    -- it is the frame rate wearing a costume. At 60 fps on a 60-pixel strip
+    that crossed the whole strip every second, far quicker than any musical
+    event, so the motion read as a blur that happened to be near the music
+    rather than with it. Expressed per second instead, the look no longer
+    changes when fps or strip length does.
+
+    16 px/s crosses a 60-pixel strip in 3.75 s, near a two-bar phrase at 120
+    BPM. Sub-pixel movement is carried between frames rather than rounded away,
+    so slow speeds still travel smoothly."""
+
+    travel_beat_response: float = 0.8
+    """How much the travel speed follows the music, 0-1.
+
+    At 0 the speed is constant. Higher makes busy passages move faster and
+    sustained ones drift, which is what "in time with it" actually asks for --
+    a fixed speed cannot be in time with anything."""
 
     energy_scale: float = 0.9
     """Exponent applied to band energy before it is mapped to a bar length."""
@@ -477,6 +573,12 @@ class Settings:
             )
         if not 0.0 <= self.effect.brightness <= 1.0:
             problems.append("effect.brightness must be between 0.0 and 1.0")
+        if self.effect.speed <= 0:
+            problems.append("effect.speed must be positive")
+        if self.effect.travel_pixels_per_second <= 0:
+            problems.append("effect.travel_pixels_per_second must be positive")
+        if not 0.0 <= self.effect.travel_beat_response <= 1.0:
+            problems.append("effect.travel_beat_response must be between 0.0 and 1.0")
 
         nyquist = self.audio.rate / 2
         if self.dsp.max_frequency > nyquist:
@@ -519,6 +621,12 @@ class Settings:
             problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
         if not 0.0 <= m.switch_margin <= 1.0:
             problems.append("mood.switch_margin must be between 0.0 and 1.0")
+        if self.dsp.hpss_frames < 1 or self.dsp.hpss_kernel < 1:
+            problems.append("dsp.hpss_frames and dsp.hpss_kernel must be at least 1")
+        if self.dsp.percussive_smoothing <= 0.0:
+            problems.append("dsp.percussive_smoothing must be positive")
+        if m.change_hold < 0.0:
+            problems.append("mood.change_hold must not be negative")
         if m.change_threshold <= 0.0:
             problems.append("mood.change_threshold must be positive")
         if m.max_dwell < m.switch_dwell:

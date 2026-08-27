@@ -87,6 +87,18 @@ class Features:
     brightness: float = 0.0
     """Spectral spread rescaled to 0-1: narrow content near 0, wide near 1."""
 
+    percussive: float = 0.5
+    """Share of spectral energy that is transient rather than sustained, 0-1.
+
+    From median-filter HPSS, smoothed into a density. Unlike ``energy`` and
+    ``brightness`` it is a ratio of two quantities in the same units, so it is
+    absolute: 0.25 means the same thing in any song and on any input gain. That
+    is why the director switches on it -- an adaptively rescaled feature drifts
+    on static material and reads as a scene change that never happened.
+
+    Drums and plucks push it up, pads and strings and speech pull it down.
+    0.5 is the neutral value reported when there is no energy to judge."""
+
     energy: float = 0.0
     """How much is going on, 0-1, adaptively rescaled across the film.
 

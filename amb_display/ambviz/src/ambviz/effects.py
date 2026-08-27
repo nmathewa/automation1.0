@@ -98,12 +98,73 @@ class EnergyEffect(Effect):
         return np.copy(self.p)
 
 
+class _Clock:
+    """Animation time: audio seconds, scaled by ``effect.speed`` and the music.
+
+    Effects that animate themselves used ``Features.t`` directly, and effects
+    that travel shifted one pixel per frame. Both tie the look to the frame
+    rate, and the second ties it to the strip length as well -- the same scroll
+    crossed 60 pixels in a second and 300 in five, and changing fps silently
+    changed the animation.
+
+    Scaling ``features.t`` by a speed setting would fix the rate and break the
+    phase: halving the speed halves the argument to every sine, so the whole
+    field jumps the moment the knob moves. Integrating the rate instead means
+    a speed change alters only what happens next, which is what a live control
+    has to do.
+
+    ``pace`` is the music term. A constant speed cannot be in time with
+    anything, so busy passages run faster and sustained ones drift, in
+    proportion to ``effect.travel_beat_response``.
+
+    Time comes from audio, not wall-clock, so a dropped frame does not make the
+    animation jump and offline runs match live ones.
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.t = 0.0
+        """Animation seconds since the effect started."""
+        self.dt = 0.0
+        """Animation seconds elapsed this frame."""
+        self._last_t: float | None = None
+        self._carry = 0.0
+
+    def advance(self, features: Features) -> float:
+        cfg = self.settings.effect
+        raw = 0.0 if self._last_t is None else features.t - self._last_t
+        self._last_t = features.t
+        # A seek, a restart or a stalled source must not unroll a thousand
+        # frames of animation in one step.
+        raw = float(np.clip(raw, 0.0, 0.1))
+        r = cfg.travel_beat_response
+        pace = (1.0 - r) + r * (0.35 + 1.30 * features.onset_rate)
+        self.dt = raw * cfg.speed * pace
+        self.t += self.dt
+        return self.t
+
+    def steps(self, pixels_per_second: float | None = None) -> int:
+        """Whole pixels to shift this frame, carrying the remainder.
+
+        Rounding the fraction away instead would stop slow travel entirely:
+        below one pixel per frame every frame rounds to zero and the effect
+        freezes.
+        """
+        rate = (self.settings.effect.travel_pixels_per_second
+                if pixels_per_second is None else pixels_per_second)
+        self._carry += rate * self.dt
+        n = int(self._carry)
+        self._carry -= n
+        return n
+
+
 class ScrollEffect(Effect):
     """New colour appears at the origin each frame and drifts outward, decaying."""
 
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
         self.p = np.tile(1.0, (3, width))
+        self.clock = _Clock(settings)
         self.gain = ExpFilter.from_alpha(
             np.tile(0.01, settings.dsp.fft_bins), settings.smoothing.gain
         )
@@ -119,10 +180,19 @@ class ScrollEffect(Effect):
             int(np.max(y[third:2 * third])),
             int(np.max(y[2 * third:])),
         ]
-        self.p[:, 1:] = self.p[:, :-1]
-        self.p *= cfg.scroll_decay
-        self.p = gaussian_filter1d(self.p, sigma=cfg.scroll_sigma)
-        self.p[:, 0] = head
+        # Decay and blur are applied *per pixel travelled*, not per frame, so
+        # slowing the scroll lengthens the time a trail is visible without
+        # also making it longer in space. Tying them to the frame instead made
+        # the trail collapse to a couple of pixels as soon as the speed came
+        # down.
+        self.clock.advance(features)
+        n = self.clock.steps()
+        if n:
+            n = min(n, self.width)
+            self.p[:, n:] = self.p[:, :-n]
+            self.p *= cfg.scroll_decay ** n
+            self.p = gaussian_filter1d(self.p, sigma=cfg.scroll_sigma * n)
+        self.p[:, :max(n, 1)] = np.array(head)[:, None]
         return np.copy(self.p)
 
 
@@ -184,19 +254,27 @@ class GravcenterEffect(Effect):
         self.peak = 0.0
         self.peak_velocity = 0.0
         self.level = ExpFilter(0.01, alpha_decay=0.2, alpha_rise=0.9)
+        self.clock = _Clock(settings)
+
+    #: Gravity on the peak marker, in strip-lengths per second squared. The
+    #: original applied 9.8 * width / 3600 *per frame*, which is the same fall
+    #: only at 60 fps and twice as fast at 120.
+    GRAVITY = 9.8 / 60.0
 
     def render(self, features: Features) -> np.ndarray:
         low, mid, high = features.thirds()
         level = float(np.clip(self.level.update(low * 1.6 + mid * 0.8 + high * 0.4), 0, 1))
         height = level * self.width
+        self.clock.advance(features)
+        dt = self.clock.dt
 
-        # Gravity on the peak marker: rise instantly, fall at 9.8 units/s^2
-        # scaled to the strip, so it lags the music the way a real meter does.
+        # Gravity on the peak marker: rise instantly, fall under acceleration,
+        # so it lags the music the way a real meter does.
         if height >= self.peak:
             self.peak, self.peak_velocity = height, 0.0
         else:
-            self.peak_velocity += 9.8 * self.width / 3600.0
-            self.peak = max(0.0, self.peak - self.peak_velocity)
+            self.peak_velocity += self.GRAVITY * self.width * dt
+            self.peak = max(0.0, self.peak - self.peak_velocity * dt)
 
         out = np.zeros((3, self.width))
         lit = int(np.clip(height, 0, self.width))
@@ -222,15 +300,24 @@ class WaterfallEffect(Effect):
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
         self.pixels = np.zeros((3, width))
+        self.clock = _Clock(settings)
 
     def render(self, features: Features) -> np.ndarray:
-        self.pixels[:, 1:] = self.pixels[:, :-1] * self.settings.effect.scroll_decay
+        # Position is time here, so the travel speed *is* the time axis: at one
+        # pixel per frame a 60-pixel strip showed the last second of music, too
+        # short a window to read as history at all.
+        self.clock.advance(features)
+        n = self.clock.steps()
+        if n:
+            n = min(n, self.width)
+            self.pixels[:, n:] = self.pixels[:, :-n]
+            self.pixels *= self.settings.effect.scroll_decay ** n
         low, mid, high = features.thirds()
         peak = max(low, mid, high)
         # Hue by which third dominates: bass red, mids green, highs blue.
         hue = 0.0 if peak == low else (0.33 if peak == mid else 0.66)
         colour = _hsv_to_rgb(np.array([hue]), 1.0, np.array([min(1.0, peak * 1.4)]))
-        self.pixels[:, 0] = colour[:, 0] * 255.0
+        self.pixels[:, :max(n, 1)] = colour[:, 0:1] * 255.0
         return np.copy(self.pixels)
 
 
@@ -243,20 +330,33 @@ class PixelwaveEffect(Effect):
 
     clone_across_nodes = False
 
+    #: Brightness kept after travelling one pixel. Per pixel rather than per
+    #: frame, so the trail is the same length however fast the wave moves.
+    DECAY = 0.92
+
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
         self.pixels = np.zeros((3, width))
+        self.clock = _Clock(settings)
 
     def render(self, features: Features) -> np.ndarray:
-        self.pixels[:, 1:] = self.pixels[:, :-1]
-        self.pixels *= 0.92
+        self.clock.advance(features)
+        n = self.clock.steps()
+        if n:
+            n = min(n, self.width)
+            self.pixels[:, n:] = self.pixels[:, :-n]
+            self.pixels *= self.DECAY ** n
         if features.beat:
             low, mid, high = features.thirds()
             total = low + mid + high + EPS
             strength = 0.35 + 0.65 * features.onset
-            self.pixels[:, 0] = np.array([low, mid, high]) / total * 255.0 * strength * 3
-        else:
-            self.pixels[:, 0] *= 0.7
+            # Written across every pixel the wave has just vacated, so a hit
+            # that lands between shifts is not lost and a fast passage does not
+            # leave gaps in the trail.
+            head = np.array([low, mid, high]) / total * 255.0 * strength * 3
+            self.pixels[:, :max(n, 1)] = head[:, None]
+        elif n:
+            self.pixels[:, :n] *= 0.7
         return np.clip(self.pixels, 0, 255)
 
 
@@ -272,17 +372,22 @@ class NoisemeterEffect(Effect):
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
         self.level = ExpFilter(0.01, alpha_decay=0.05, alpha_rise=0.4)
+        self.clock = _Clock(settings)
 
     def render(self, features: Features) -> np.ndarray:
         level = float(np.clip(self.level.update(max(features.thirds())), 0, 1))
         x = np.linspace(0, 4 * np.pi, self.width)
         # Three incommensurate sines never repeat, which reads as noise while
         # staying smooth and cheap -- no Perlin table required.
-        field = (np.sin(x + features.t * 0.7)
-                 + np.sin(x * 0.61 - features.t * 0.43)
-                 + np.sin(x * 1.37 + features.t * 0.29)) / 3.0
+        # Animation time, not audio time: this is the only thing that lets the
+        # speed control reach a self-animating effect, and integrating it keeps
+        # the field continuous when the speed changes.
+        now = self.clock.advance(features)
+        field = (np.sin(x + now * 0.7)
+                 + np.sin(x * 0.61 - now * 0.43)
+                 + np.sin(x * 1.37 + now * 0.29)) / 3.0
         brightness = np.clip((field * 0.5 + 0.5) * level, 0, 1)
-        hue = (features.t * 0.02 + np.linspace(0, 0.15, self.width)) % 1.0
+        hue = (now * 0.02 + np.linspace(0, 0.15, self.width)) % 1.0
         return _hsv_to_rgb(hue, 0.85, brightness) * 255.0
 
 
@@ -318,13 +423,32 @@ class CinemaEffect(Effect):
     close to ``bars`` -- just smoother. So this is a cross-fade rather than a
     wash with decoration on top.
 
-    At one end, a single slowly drifting colour with a brightness floor. At the
-    other, the Mel bands across the strip, smoothed far harder than ``bars``
-    smooths them so the result reads as motion rather than flicker. Scene energy
-    picks the point between, and dialogue pulls it back toward the wash.
+    At one end, a swell of several sine layers under a single slowly drifting
+    colour. At the other, the Mel bands across the strip, smoothed far harder
+    than ``bars`` smooths them so the result reads as motion rather than
+    flicker. Scene energy picks the point between, and dialogue pulls it back
+    toward the wash.
+
+    The wash used to be a fixed arch -- ``0.75 + 0.25 cos`` -- which never
+    moved. A still gradient is not calm, it is inert, and it made the quiet end
+    of the library look like a fault. The swell that replaced it is the one
+    good idea from ``pacifica``: several sines at different scales drifting at
+    different speeds, so they never quite repeat.
+
+    What makes it belong to the music rather than to the clock is that
+    ``brightness`` sets the *scale*. That feature is spectral spread rescaled
+    to 0-1, so a narrow, dark sound -- a voice, a held low chord -- gets one
+    long slow arch, and a wide, bright one breaks into several finer ripples.
+    The wash therefore changes character with the material while still moving
+    slowly enough to sit behind dialogue. Position never means frequency here;
+    it is meant to be looked past rather than read.
     """
 
     clone_across_nodes = False
+
+    #: Share of the wash's brightness present at a wave trough. The swell rides
+    #: the remaining fraction, so the strip breathes without ever going dark.
+    TROUGH = 0.55
 
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
@@ -335,6 +459,11 @@ class CinemaEffect(Effect):
         self.bands = ExpFilter(np.tile(0.01, settings.dsp.fft_bins),
                                alpha_decay=0.02, alpha_rise=0.10)
         self._mix = ExpFilter(0.0, alpha_decay=0.01, alpha_rise=0.03)
+        self.clock = _Clock(settings)
+        # Brightness is smoothed hard before it reaches the wave. Unsmoothed it
+        # jitters frame to frame, and a spatial frequency that jitters reads as
+        # the whole field boiling -- the opposite of soothing.
+        self._brightness = ExpFilter(0.3, alpha_decay=0.004, alpha_rise=0.008)
 
     def render(self, features: Features) -> np.ndarray:
         cfg = self.settings.mood
@@ -342,9 +471,28 @@ class CinemaEffect(Effect):
         m = self.mood
 
         x = np.linspace(0.0, 1.0, self.width)
-        # A gentle arch, so even a still strip has some shape to it.
-        wash_value = max(m.level, cfg.floor) * (0.75 + 0.25 * np.cos((x - 0.5) * np.pi))
-        wash_hue = (m.hue + np.linspace(-0.02, 0.02, self.width)) % 1.0
+        now = self.clock.advance(features)
+
+        # Spatial scale from brightness: one slow arch on narrow, dark material,
+        # several ripples on wide, bright material.
+        b = float(np.clip(self._brightness.update(features.brightness), 0.0, 1.0))
+        cycles = 0.45 + 1.75 * b
+        # Three layers at incommensurate scales and speeds, so the pattern
+        # never repeats and no layer ever dominates. Speeds are deliberately
+        # slower than anything else in the library -- this is the effect that
+        # has to survive being on screen through a whole quiet scene.
+        swell = (0.50 * np.sin(2 * np.pi * x * cycles + now * 0.13)
+                 + 0.32 * np.sin(2 * np.pi * x * cycles * 0.61 - now * 0.09)
+                 + 0.18 * np.sin(2 * np.pi * x * cycles * 1.43 + now * 0.17))
+        swell = 0.5 + 0.5 * swell            # back into 0-1
+        # Never fully dark at the troughs: a wash that reaches zero somewhere
+        # along the strip reads as a dead pixel, not as a wave.
+        wash_value = max(m.level, cfg.floor) * (self.TROUGH + (1.0 - self.TROUGH) * swell)
+        # Hue drifts with the swell as well as across the strip, so crests run
+        # slightly warmer than troughs and the wave is visible even when the
+        # level is almost flat.
+        wash_hue = (m.hue + np.linspace(-0.02, 0.02, self.width)
+                    + 0.03 * (swell - 0.5)) % 1.0
 
         # Smoothed spectrum, mapped the way bars maps it.
         levels = np.clip(self.bands.update(np.copy(features.mel)), 0.0, 1.5)
@@ -354,7 +502,14 @@ class CinemaEffect(Effect):
         # Cross-fade slowly, so the scene changing does not snap the look.
         mix = float(self._mix.update(m.detail))
         value = np.clip(wash_value * (1.0 - mix) + spectral_value * mix, 0.0, 1.0)
-        value = np.maximum(value, cfg.floor * (1.0 - mix))
+        # The floor guarantees the *trough*, not the whole wash.
+        #
+        # Clamping at ``floor`` itself flattened the effect completely: the
+        # wash is ``floor`` multiplied by something no greater than one, so
+        # every pixel came out at exactly the floor and the strip showed one
+        # even bar. The static arch this replaced had the same bug and hid it
+        # by never moving.
+        value = np.maximum(value, cfg.floor * self.TROUGH * (1.0 - mix))
 
         # The accent is added after the cross-fade rather than folded into the
         # level, so a hit punches through whatever the slow layer is doing --
@@ -365,61 +520,6 @@ class CinemaEffect(Effect):
         hue = np.where(mix > 0.5, spectral_hue, wash_hue)
         saturation = m.saturation * (1.0 - 0.15 * mix)
         return _hsv_to_rgb(hue, saturation, value) * 255.0
-
-
-class PacificaEffect(Effect):
-    """Layered ocean swells: gentle, wide, and slow.
-
-    Ported from Mark Kriegsman's ``Pacifica`` in FastLED (MIT), which is four
-    blue-green waves at different scales and speeds summed together, with
-    whitecaps where they happen to coincide. The original is free-running; here
-    the swell height follows the level, so a quiet scene barely moves and a
-    loud one rolls.
-
-    This is the ambient end of the library. Nothing in it maps frequency onto
-    position, which is the point -- it is meant to be looked past rather than
-    read.
-    """
-
-    clone_across_nodes = False
-
-    #: (cycles across the strip, drift speed, weight) per layer.
-    #:
-    #: The original expresses scale in radians per *pixel*, which assumes a
-    #: strip long enough for that to produce waves. On 60 pixels no layer
-    #: completed even one cycle and the whole effect flattened to one teal bar
-    #: -- measured spatial contrast 0.089 against 0.35-0.87 for the rest of the
-    #: library. Cycles-across-the-strip makes it look the same at any width,
-    #: which a rig of several nodes needs anyway.
-    LAYERS = ((2.6, 0.34, 0.55), (1.9, -0.29, 0.40),
-              (1.3, 0.21, 0.28), (0.8, -0.15, 0.22))
-
-    def __init__(self, settings: Settings, width: int):
-        super().__init__(settings, width)
-        self.level = ExpFilter(0.05, alpha_decay=0.006, alpha_rise=0.02)
-
-    def render(self, features: Features) -> np.ndarray:
-        x = np.linspace(0.0, 1.0, self.width)
-        swell = np.zeros(self.width)
-        for cycles, speed, weight in self.LAYERS:
-            swell += weight * (0.5 + 0.5 * np.sin(
-                2.0 * np.pi * x * cycles + features.t * speed))
-        swell /= sum(w for _, _, w in self.LAYERS)
-
-        # A swell that never quite stills, lifted by the music rather than
-        # driven by it.
-        level = float(np.clip(self.level.update(features.energy), 0, 1))
-        value = np.clip((0.25 + 0.75 * level) * swell, 0.0, 1.0)
-
-        # Deep blue in the troughs, cyan at the crests.
-        hue = 0.60 - 0.11 * swell
-        out = _hsv_to_rgb(hue, 0.90, value)
-
-        # Whitecaps where the layers coincide, scaled by how loud it is so
-        # they stay rare in a quiet scene.
-        caps = np.clip((swell - 0.82) / 0.18, 0.0, 1.0) * level
-        out = np.clip(out + caps * 0.85, 0.0, 1.0)
-        return out * 255.0
 
 
 class PuddlesEffect(Effect):
@@ -518,23 +618,46 @@ class FireEffect(Effect):
 
     clone_across_nodes = False
 
+    #: Frame rate Fire2012's constants were written against. Everything below
+    #: is expressed per second by scaling from it, so the flame looks the same
+    #: at 30, 60 or 120 fps instead of raging at one and smouldering at another.
+    REFERENCE_FPS = 60.0
+
     def __init__(self, settings: Settings, width: int):
         super().__init__(settings, width)
         self.heat = np.zeros(width)
+        self.clock = _Clock(settings)
+        self._drift = 0.0
         self.rng = np.random.default_rng(0x85EBCA6B)
 
     def render(self, features: Features) -> np.ndarray:
         n = self.width
-        # 1. Cool every cell a little. Less cooling when it is loud.
-        cooling = (1.0 - 0.55 * features.energy) * (55.0 * 10.0 / n + 2.0) / 255.0
-        self.heat = np.maximum(0.0, self.heat - self.rng.random(n) * cooling)
+        self.clock.advance(features)
+        # Fire2012 is a per-frame simulation, so its three steps are converted
+        # to rates and then re-quantised. Ticks, not seconds, because cooling
+        # and diffusion are only meaningful as whole passes.
+        self._drift += self.clock.dt * self.REFERENCE_FPS
+        ticks = int(self._drift)
+        self._drift -= ticks
+        # A long stall must not run hundreds of passes in one frame.
+        ticks = min(ticks, 4)
 
-        # 2. Heat drifts away from the origin and diffuses.
-        if n >= 3:
-            self.heat[2:] = (self.heat[1:-1] + 2.0 * self.heat[:-2]) / 3.0
+        for _ in range(ticks):
+            # 1. Cool every cell a little. Less cooling when it is loud.
+            cooling = (1.0 - 0.55 * features.energy) * (55.0 * 10.0 / n + 2.0) / 255.0
+            self.heat = np.maximum(0.0, self.heat - self.rng.random(n) * cooling)
+
+            # 2. Heat drifts away from the origin and diffuses.
+            if n >= 3:
+                self.heat[2:] = (self.heat[1:-1] + 2.0 * self.heat[:-2]) / 3.0
 
         # 3. Sparks at the origin, thrown by onsets rather than at random.
-        spark = 0.12 + 0.50 * features.onset + (0.30 if features.beat else 0.0)
+        # A beat is an event, so it throws a spark whether or not a cooling
+        # tick happened to land on this frame -- gating it on `ticks` would
+        # drop hits at low speed, which is exactly when they matter most.
+        spark = (0.12 + 0.50 * features.onset) * max(ticks, 0)
+        if features.beat:
+            spark += 0.30
         if self.rng.random() < spark:
             at = int(self.rng.integers(0, min(3, n)))
             self.heat[at] = min(1.0, self.heat[at] + 0.6 + 0.4 * self.rng.random())
@@ -558,7 +681,6 @@ EFFECTS: dict[str, type[Effect]] = {
     "noisemeter": NoisemeterEffect,
     "solid": SolidEffect,
     "cinema": CinemaEffect,
-    "pacifica": PacificaEffect,
     "puddles": PuddlesEffect,
     "freqwave": FreqwaveEffect,
     "fire": FireEffect,
@@ -590,8 +712,46 @@ class Director(Effect):
                         for n in self.allowed}
         self._char = ExpFilter(np.zeros(4), alpha_decay=alpha, alpha_rise=alpha)
         self.anchor: np.ndarray | None = None
+        self._raw: np.ndarray | None = None
+        # When each candidate last had the strip. Unseen ones sort first, so a
+        # cold start walks the whole shortlist before repeating anything.
+        self._last_seen: dict[str, float] = {}
         self.drift = 0.0
         """Distance the audio's character has moved since the last switch."""
+        self._crossed_at: float | None = None
+        """When the drift last went past the threshold, or None below it."""
+        self.held = 0.0
+        """Seconds the drift has been past the threshold. Resets when it falls
+        back, so a dashboard can see a switch being *considered* rather than
+        only the moment it fires."""
+
+    def retune(self, animations: tuple[str, ...]) -> None:
+        """Adopt a new shortlist without dropping what is on screen.
+
+        ``mood.animations`` is patchable at runtime but the shortlist was read
+        once in ``__init__``, so the API accepted a change, reported it applied
+        and went on scoring the original five -- the dashboard's shortlist
+        control did nothing at all until a restart.
+
+        Rebuilding the whole effect would fix that and cost a visible seam: the
+        cached animations lose their scroll histories and peak markers, and the
+        strip jumps every time the list is touched. Everything that is still a
+        candidate keeps its smoothed score and its last-seen stamp; only the
+        arrivals start cold.
+        """
+        cfg = self.settings.mood
+        seconds = max(cfg.score_smoothing, 1e-3)
+        alpha = min(0.999, 1.0 / (seconds * max(self.settings.audio.fps, 1)))
+        self.allowed = tuple(animations)
+        self._smooth = {
+            n: self._smooth.get(n) or ExpFilter(0.0, alpha_decay=alpha, alpha_rise=alpha)
+            for n in self.allowed
+        }
+        self.scores = {n: v for n, v in self.scores.items() if n in self.allowed}
+        self._last_seen = {n: v for n, v in self._last_seen.items() if n in self.allowed}
+        # A dropped incumbent is left running rather than cut mid-frame: it is
+        # no longer in `scores`, so `choose` cannot re-elect it and the next
+        # switch retires it through the usual crossfade.
 
     def _effect(self, name: str) -> Effect:
         # Built on first use and kept: recreating one per switch would discard
@@ -601,14 +761,32 @@ class Director(Effect):
         return self._cache[name]
 
     def _character(self, f: Features) -> np.ndarray:
-        """The audio's character as a point: what "the scene changed" measures."""
-        raw = np.array([f.energy, f.onset_rate, f.brightness, f.dialogue])
+        """The audio's character as a point: what "the scene changed" measures.
+
+        ``percussive`` sits here in place of ``brightness``, which was actively
+        harmful in this one role. Brightness is an :class:`AdaptiveRange`
+        output, and an adaptive range rescales whatever it is fed to fill 0-1 --
+        so on static material it keeps moving, and the drift it contributes is
+        the normaliser rediscovering its own bounds rather than the audio going
+        anywhere. The percussive fraction is a ratio of two energies in the same
+        units: it holds still when the music does, and moves when a track
+        actually changes between rhythmic and sustained.
+
+        Four dimensions on purpose. ``change_threshold`` is a distance in this
+        space and was tuned against four, so adding a fifth would silently
+        rescale every existing config. ``brightness`` is untouched elsewhere --
+        effects and candidate scores still use it.
+        """
+        raw = np.array([f.energy, f.onset_rate, f.percussive, f.dialogue])
         # Seed on first sight rather than smoothing up from zero. Warming up
         # from zeros meant the anchor was captured mid-warm-up and the drift
         # measured the filter converging, not the audio moving -- the director
         # switched once at startup on any material.
         if self.anchor is None:
             self._char.value = np.copy(raw)
+        # Kept so a switch can anchor on where the audio *is* rather than on
+        # where the filter has got to. See choose().
+        self._raw = np.copy(raw)
         return self._char.update(raw)
 
     def choose(self, f: Features) -> str:
@@ -638,18 +816,58 @@ class Director(Effect):
             return self.current
         if f.t - self.last_switch < cfg.switch_dwell:
             return self.current
-        moved = self.drift > cfg.change_threshold
+        # The drift has to *stay* past the threshold, not merely touch it.
+        # Smoothed features still wobble, and a single frame's excursion was
+        # enough to commit the strip for a whole dwell -- a switch with nothing
+        # behind it. The clock resets the moment drift falls back, so only a
+        # sustained move counts.
+        if self.drift > cfg.change_threshold:
+            if self._crossed_at is None:
+                self._crossed_at = f.t
+        else:
+            self._crossed_at = None
+        self.held = 0.0 if self._crossed_at is None else f.t - self._crossed_at
+        moved = self.held >= cfg.change_hold
         expired = f.t - self.last_switch > cfg.max_dwell
         if not (moved or expired):
             return self.current
-        self.anchor = np.copy(vec)
+        self._crossed_at = None
+        self.held = 0.0
+        # Anchor on the raw character, not on the smoothed one.
+        #
+        # The smoothed vector is still travelling when a switch fires -- that
+        # is what crossing the threshold means -- so anchoring on it left the
+        # remaining convergence to be re-measured as fresh drift, and one
+        # change of music produced a burst of switches as the filter caught up.
+        # Measured on a step from percussive 0.3 to 0.95: three switches, the
+        # last of which landed back on the animation it started from. The raw
+        # value is where the audio already is, so the filter converging toward
+        # it now drives drift down instead of up.
+        self.anchor = np.copy(self._raw if self._raw is not None else vec)
         others = {n: v for n, v in self.scores.items() if n != self.current}
-        return max(others, key=lambda k: others[k])
+        # Least recently shown, among everything close enough to the leader to
+        # be a defensible choice.
+        #
+        # Taking the best-scoring candidate instead looks obviously right and is
+        # not: whichever animation tends to lead is also the top *other* from
+        # everywhere else, so every switch away from it comes straight back.
+        # Measured over 75 s of real audio, ``puddles`` led nearly every frame
+        # and the strip simply alternated puddles - runner-up - puddles, giving
+        # it 46% of the time while ``energy``, never once rank two, was
+        # unreachable. Scores are within about 0.2 of each other anyway, so
+        # ranking cannot carry this much weight; it decides who is *eligible*
+        # and recency decides who actually goes on.
+        best = max(others.values())
+        pool = [n for n, v in others.items() if v >= best - cfg.switch_margin]
+        return min(pool, key=lambda n: (self._last_seen.get(n, -1.0), -others[n]))
 
     def render(self, f: Features) -> np.ndarray:
         cfg = self.settings.mood
         want = self.choose(f)
         if want != self.current:
+            # Stamped on the way out, so "least recently seen" measures when a
+            # candidate last *finished* rather than when it started.
+            self._last_seen[self.current] = f.t
             self.previous, self.current = self.current, want
             self.fade = 0.0
             self.last_switch = f.t
@@ -677,7 +895,9 @@ class Director(Effect):
             "fade": round(self.fade, 3),
             "switches": self.switches,
             "drift": round(self.drift, 3),
+            "held": round(self.held, 2),
             "scores": {k: round(v, 3) for k, v in sorted(self.scores.items())},
+            "last_seen": {k: round(v, 1) for k, v in sorted(self._last_seen.items())},
         }
 
 

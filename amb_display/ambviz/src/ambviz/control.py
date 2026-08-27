@@ -29,6 +29,9 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "effect.mirror",
     "effect.scroll_decay",
     "effect.scroll_sigma",
+    "effect.speed",
+    "effect.travel_pixels_per_second",
+    "effect.travel_beat_response",
     "effect.energy_scale",
     "effect.energy_sigma",
     # how the audio is analysed
@@ -39,6 +42,9 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "dsp.gain_sigma",
     "dsp.onset_sensitivity",
     "dsp.onset_refractory",
+    "dsp.hpss_frames",
+    "dsp.hpss_kernel",
+    "dsp.percussive_smoothing",
     "dsp.vocal_suppression",
     "dsp.vocal_band",
     # the slow layer
@@ -51,6 +57,7 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "mood.switch_dwell",
     "mood.switch_margin",
     "mood.change_threshold",
+    "mood.change_hold",
     "mood.max_dwell",
     "mood.crossfade",
     "mood.deadband",
