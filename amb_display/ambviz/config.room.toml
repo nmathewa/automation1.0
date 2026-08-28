@@ -1,0 +1,72 @@
+# ambviz settings for a three-sided room rig.
+#
+#   ambviz run --config config.room.toml --virtual --static ../dashboard --api-host 0.0.0.0
+#
+# The companion to config.example.toml, which describes a single strip. The
+# only thing that makes this a room is [output].segments; everything else here
+# is trim for the walls it creates.
+#
+# Precedence: these values  <  AMBVIZ_* environment  <  command-line flags.
+
+display_fps = true
+
+[output]
+device = "udp"
+host = "127.0.0.1"        # 127.0.0.1 for the simulator; the ESP's IP for hardware
+port = 7777
+
+# Left wall, front, right wall -- one chain, in wiring order.
+#
+# The widest run is the front and carries the animation exactly as a single
+# strip would; the other two are walls. `pixels` is deliberately absent: it is
+# derived from this sum, and a rig described twice is a rig whose two
+# descriptions will eventually disagree.
+segments = [30, 60, 30]
+
+side_mode = "stereo"      # "stereo" -- each wall driven by its own channel; "wash" -- blurred spill off the front
+side_animation = "freqwave"   # "" follows whatever the front is running
+side_brightness = 1.0     # trim the walls against the front without touching either's content
+
+# How different the two channels must be before the walls split. Below this
+# there is no stereo story to tell and they fall back to the runner-up stem,
+# then to the front's own analysis.
+stereo_threshold = 0.18
+stereo_emphasis = 0.7
+
+# The wash, used for a mono source or when the sides have nothing of their own.
+wash_span = 0.35          # how far along the front a wall reads its light from
+wash_softness = 0.6
+
+# A wall answering an event, rather than merely being lit. Applied after the
+# ambience cap, so an accent out-shines the room briefly instead of reading as
+# a slight brightening.
+accent_animation = "scroll"
+accent_threshold = 0.35
+accent_strength = 1.0
+accent_alternate = true
+
+max_pixels_per_packet = 126
+gamma_correction = false
+full_refresh_interval = 2.0
+
+[audio]
+source = "loopback"       # what the machine is playing; stereo, which the walls need
+rate = 44100
+fps = 60
+
+[effect]
+name = "auto"             # let the director pick; the walls follow it
+mirror = true
+brightness = 1.0
+
+[mood]
+# Demucs stem separation, off by default.
+#
+# Raising this past 0 builds the separator on a background thread and downloads
+# a few hundred MB of htdemucs weights on first use. It colours each wall by
+# the *second* most prominent stem -- what the mix contains that the front is
+# not already showing. The dashboard's stem slider does the same thing live.
+stem_weight = 0.0
+stem_window = 1.0
+stem_interval = 0.5
+stem_smoothing = 2.0

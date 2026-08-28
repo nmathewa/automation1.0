@@ -353,6 +353,21 @@
           <output id="out-stem">—</output>
         </div>
       </div>
+      <div class="ctl" id="ctl-room">
+        <span>Room <small id="room-note"></small></span>
+        <div class="row">
+          <select id="ctl-sidemode" aria-label="What the side walls show">
+            <option value="stereo">Sides: stereo</option>
+            <option value="wash">Sides: wash</option>
+          </select>
+          <select id="ctl-sideanim" aria-label="Animation the side walls run"></select>
+        </div>
+        <div class="row">
+          <input type="range" id="ctl-sidebright" min="0" max="1" step="0.05"
+                 aria-label="Side wall brightness against the front">
+          <output id="out-sidebright">—</output>
+        </div>
+      </div>
       <div class="ctl">
         <span>Mel bands</span>
         <div class="row">
@@ -1058,6 +1073,30 @@
     $("spectrum-range").textContent = `${engine.min_frequency}–${engine.max_frequency} Hz`;
   }
 
+  /** The side-wall controls, and whether there are any walls to control.
+   *
+   *  `segments` is the whole feature: without it the rig is one strip, there is
+   *  no side for a side setting to reach, and three live controls that visibly
+   *  do nothing are worse than three disabled ones. It cannot be switched on
+   *  from here either -- it resizes the strip, so it is config-file and restart
+   *  only, which the note has to say outright. */
+  function syncRoom(out, force = false) {
+    const segs = out.segments || [];
+    const room = segs.length > 1;
+    for (const id of ["ctl-sidemode", "ctl-sideanim", "ctl-sidebright"]) {
+      $(id).disabled = !room;
+    }
+    $("room-note").textContent = room
+      ? `— ${segs.join(" · ")} px, front is the widest`
+      : "— one strip; set [output].segments in a config file and restart";
+    if (force || editing !== "sidemode") $("ctl-sidemode").value = out.side_mode;
+    if (force || editing !== "sideanim") $("ctl-sideanim").value = out.side_animation || "";
+    if (force || editing !== "sidebright") {
+      $("ctl-sidebright").value = out.side_brightness;
+      $("out-sidebright").textContent = Number(out.side_brightness).toFixed(2);
+    }
+  }
+
   /** Push server values into the widgets, skipping whatever is being dragged.
    *  Returns true when it had settings to apply. */
   function syncControls(cfg, force = false) {
@@ -1102,6 +1141,7 @@
       if (editing === `alpha-${input.dataset.alpha}-${input.dataset.slot}`) continue;
       input.value = cfg.smoothing[input.dataset.alpha][Number(input.dataset.slot)];
     }
+    if (cfg.output) syncRoom(cfg.output, force);
     $("spectrum-range").textContent = `${cfg.dsp.min_frequency}–${cfg.dsp.max_frequency} Hz`;
     return true;
   }
@@ -1139,6 +1179,13 @@
     (v) => ($("out-stem").textContent = Number(v).toFixed(2)),
     (v) => ({ mood: { stem_weight: Number(v) } }));
   bindLive($("ctl-damp"), "damp", () => {}, (v) => ({ mood: { dialogue_damping: Number(v) } }));
+  bindLive($("ctl-sidebright"), "sidebright",
+    (v) => ($("out-sidebright").textContent = Number(v).toFixed(2)),
+    (v) => ({ output: { side_brightness: Number(v) } }));
+  bindSelect($("ctl-sidemode"), () => settingsCache?.output?.side_mode,
+    (v) => ({ output: { side_mode: v } }));
+  bindSelect($("ctl-sideanim"), () => settingsCache?.output?.side_animation ?? "",
+    (v) => ({ output: { side_animation: v } }));
   bindLive($("ctl-vocal"), "vocal",
     (v) => ($("out-vocal").textContent = Number(v).toFixed(2)),
     (v) => ({ dsp: { vocal_suppression: Number(v) } }));
@@ -1162,6 +1209,23 @@
     el.addEventListener("input", () => { editing = name; echo(el.value); });
     el.addEventListener("change", () => { editing = null; send(patch(el.value)); });
   }
+  /** Selects: POST only a genuine choice.
+   *
+   *  A browser restoring a form on reload fires `change` with its remembered
+   *  value, which would push a stale selection over whatever the server was
+   *  started with. Reading the server's current value back and comparing is
+   *  what makes the server the authority; it also skips while the settings
+   *  cache is still empty, since "we do not know yet" must mean "do not push".
+   *  Same reasoning as the effect select. */
+  function bindSelect(el, current, patch) {
+    el.addEventListener("change", () => {
+      editing = null;
+      const now = current();
+      if (now === undefined || now === null || el.value === String(now)) return;
+      send(patch(el.value));
+    });
+  }
+
   /** Number fields: POST on blur or Enter. */
   function bindCommit(el, name, patch) {
     el.addEventListener("focus", () => (editing = name));
@@ -1263,6 +1327,18 @@
     if (!names || !names.length || sel.dataset.built === names.join(",")) return;
     sel.dataset.built = names.join(",");
     sel.innerHTML = names.map((n) => `<option value="${n}">${TITLE(n)}</option>`).join("");
+    // The walls take a named animation or "" to follow the front. `auto` is not
+    // offered: the director switches the *front*, and a wall re-deciding on its
+    // own timer is a second focal point, which is the thing the sides exist not
+    // to be.
+    const side = $("ctl-sideanim");
+    side.innerHTML = '<option value="">Sides: follow front</option>' +
+      names.filter((n) => n !== "auto")
+           .map((n) => `<option value="${n}">Sides: ${TITLE(n)}</option>`).join("");
+    // Health and settings race, and assigning `.value` before the options exist
+    // silently does nothing -- leaving the select showing "follow front" for a
+    // rig that is running something else. Re-apply whatever already arrived.
+    if (settingsCache?.output) syncRoom(settingsCache.output, true);
   }
 
   function applyHealth(h) {
