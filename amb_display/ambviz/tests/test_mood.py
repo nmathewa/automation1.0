@@ -87,12 +87,13 @@ def test_blend_ignores_zero_weight_sources():
 
 
 # ── the claim that motivated all of this ─────────────────────────────────────
-def film_like(v, seconds, scene_period=20.0):
+def film_like(rigged, seconds, scene_period=20.0):
     """Centred speech-band content whose spectrum drifts across a scene.
 
     Deliberately narrow-range: that is the condition under which a fixed
     mapping collapses to one colour.
     """
+    v, mood = rigged
     n = v.samples_per_frame
     hues = []
     for i in range(int(seconds * v.settings.audio.fps)):
@@ -100,7 +101,7 @@ def film_like(v, seconds, scene_period=20.0):
         f0 = 700 + 250 * np.sin(((i * n / SR) / scene_period) * 2 * np.pi)
         speech = np.sin(2 * np.pi * f0 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3.0 * t)) * 0.7
         v.process(np.stack([speech, speech * 0.98], axis=1) * 7000)
-        hues.append(v.effect.mood.hue)
+        hues.append(mood.update(v.features).hue)
     return np.array(hues[int(len(hues) * 0.3):])
 
 
@@ -110,8 +111,17 @@ def circular_sd(hues):
     return float(np.sqrt(-2 * np.log(max(r, 1e-12))) / (2 * np.pi))
 
 
-def cinema():
-    return Visualizer(Settings.load(overrides={"effect": {"name": "cinema"}}))
+def rig():
+    """A visualizer plus a standalone mood.
+
+    The mood layer used to be exercised through ``cinema``, which was the only
+    effect that consumed it. With that effect gone the layer is still worth
+    testing -- it is meant to gain a second source, a picture feed -- so these
+    drive :class:`AudioMood` directly off the same real analysis instead of
+    through whichever effect happens to render it.
+    """
+    v = Visualizer(Settings.load(overrides={"effect": {"name": "spectrum"}}))
+    return v, AudioMood(v.settings)
 
 
 def test_adaptive_range_is_what_stops_colour_sticking():
@@ -120,11 +130,11 @@ def test_adaptive_range_is_what_stops_colour_sticking():
     With a fixed mapping the hue barely moves on this material -- that is the
     reported symptom. Adaptive rescaling should make it use most of the circle.
     """
-    fixed = cinema()
-    fixed.effect.mood_source._range.update = lambda x: float(np.clip(x / (SR / 2), 0, 1))
+    fixed = rig()
+    fixed[1]._range.update = lambda x: float(np.clip(x / (SR / 2), 0, 1))
     stuck = circular_sd(film_like(fixed, 90))
 
-    moving = circular_sd(film_like(cinema(), 90))
+    moving = circular_sd(film_like(rig(), 90))
 
     assert stuck < 0.02, f"the fixed mapping was expected to stick, got sd {stuck:.4f}"
     assert moving > stuck * 10, f"adaptive sd {moving:.4f} vs fixed {stuck:.4f}"
@@ -137,16 +147,16 @@ def test_hue_is_smoothed_before_being_rate_limited():
     target that reverses several times a second and nets no movement. That
     produced *less* colour movement than no adaptation at all.
     """
-    v = cinema()
-    assert hasattr(v.effect.mood_source, "_smooth")
-    hues = film_like(v, 60)
+    rigged = rig()
+    assert hasattr(rigged[1], "_smooth")
+    hues = film_like(rigged, 60)
     assert circular_sd(hues) > 0.05
 
 
 def test_time_advances_with_the_audio_not_the_clock():
     """Offline processing runs far faster than real time; a wall-clock t would
     make the mood race and results irreproducible."""
-    v = cinema()
+    v, _ = rig()
     n = v.samples_per_frame
     for _ in range(v.settings.audio.fps):
         v.process(np.zeros((n, 2)))
@@ -195,7 +205,7 @@ def test_a_fight_scene_reaches_the_spectrum_and_dialogue_does_not():
         right = (rng.normal(0, 1, n) * 0.5 + hits + brass * 0.8) * 0.7
         return np.stack([left, right], axis=1) * 7000   # loud, wide, transient
 
-    v = cinema()
+    v, mood = rig()
     n = v.samples_per_frame
     i, means = 0, []
     for gen, secs in ((talk, 25), (fight, 25), (talk, 25)):
@@ -203,7 +213,7 @@ def test_a_fight_scene_reaches_the_spectrum_and_dialogue_does_not():
         for _ in range(int(secs * v.settings.audio.fps)):
             v.process(gen(i, n))
             i += 1
-            seg.append(v.effect.mood.detail)
+            seg.append(mood.update(v.features).detail)
         means.append(float(np.mean(seg[len(seg) // 2:])))
 
     quiet_a, action, quiet_b = means
@@ -213,16 +223,6 @@ def test_a_fight_scene_reaches_the_spectrum_and_dialogue_does_not():
     assert action > 0.4, f"the fight only reached detail {action:.2f}"
     assert quiet_a < 0.3 and quiet_b < 0.3, f"dialogue sat at {quiet_a:.2f}/{quiet_b:.2f}"
     assert action > max(quiet_a, quiet_b) * 3
-
-
-def test_brightness_never_reaches_zero():
-    """A strip snapping fully dark mid-scene is worse than one that drifts."""
-    v = cinema()
-    out = v.process(np.zeros((v.samples_per_frame, 2)))
-    assert out.max() == 0.0            # true silence still blanks
-    for _ in range(30):
-        out = v.process(np.full((v.samples_per_frame, 2), 30.0))
-    assert out.max() > 0.0, "quiet audio should still show the floor"
 
 
 # ── dynamics ─────────────────────────────────────────────────────────────────
@@ -254,7 +254,7 @@ def test_default_attack_lands_within_a_fifth_of_a_second():
 def test_onsets_reach_the_output():
     """The rewrite as a cross-fade dropped beat response entirely; this is the
     regression guard."""
-    v = cinema()
+    v = Visualizer(Settings.load(overrides={"effect": {"name": "puddles"}}))
     n = v.samples_per_frame
     rng = np.random.default_rng(0)
     peaks = []

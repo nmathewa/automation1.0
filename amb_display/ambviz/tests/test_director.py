@@ -211,15 +211,15 @@ def _f(**kw):
 #: alongside it. Nothing distinguishes them until there is a feature for how
 #: *regular* a pulse is.
 WIDE = ("bars", "energy", "scroll", "spectrum", "waterfall",
-        "cinema", "puddles", "freqwave", "fire")
+        "noisemeter", "puddles", "freqwave", "fire")
 
 
 def test_each_new_effect_wins_the_scene_it_was_built_for():
     """A candidate nobody ever picks is dead weight in the shortlist."""
     cases = {
-        # calm, no pulse, sustained -> the wash
-        "cinema": _f(energy=0.15, dialogue=0.9, onset_rate=0.0, brightness=0.1,
-                     percussive=0.05),
+        # calm, no pulse, sustained -> the quietest texture in the library
+        "noisemeter": _f(energy=0.05, dialogue=0.9, onset_rate=0.0, brightness=0.1,
+                         percussive=0.05),
         # a strong rhythm -> the sparse hits
         "puddles": _f(energy=0.6, onset_rate=1.0, dialogue=0.0, brightness=0.3),
         # loud and dark -> fire
@@ -241,7 +241,7 @@ def test_puddles_and_pixelwave_overlap():
 
 def test_new_effects_are_scored_at_all():
     scores = score_candidates(_f(energy=0.5, onset_rate=0.5))
-    for name in ("cinema", "puddles", "freqwave", "fire"):
+    for name in ("noisemeter", "puddles", "freqwave", "fire"):
         assert name in scores, name
 
 

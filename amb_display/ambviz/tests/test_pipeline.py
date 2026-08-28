@@ -239,34 +239,151 @@ def test_slow_travel_still_moves():
     assert _travelled("scroll", 60, seconds=4.0, travel_pixels_per_second=3.0) > 0
 
 
-def test_cinema_wash_moves_on_its_own():
-    """A still gradient is not calm, it is inert -- it made the quiet end of
-    the library look like a fault.
-
-    Measured relative to the wash's own brightness, because the wash is dim by
-    design: an absolute threshold here just tests the level, not the motion.
-    Before the swell this read 0.00002; it is now 0.05 at any level.
-    """
-    for slow in (0.0, 0.5):
-        late = _render("cinema", 900, energy=0.05, dialogue=0.9,
-                       brightness=0.3, slow=slow)[400:]
-        moved = late.std(axis=0).max() / max(late.mean(), 1e-9)
-        assert moved > 0.02, f"wash never moves at slow={slow} ({moved:.5f})"
+def test_freqwave_is_not_dimmer_than_the_effects_it_competes_with():
+    """It applied no display curve while `bars` did, so on real music it ran
+    37% darker with a tenth of its pixels under 13/255. It was not doing
+    nothing; it was doing it too dimly to read."""
+    kw = dict(energy=0.6, brightness=0.5, onset_rate=0.4, centroid_hz=900.0)
+    fw = _render("freqwave", 300, **kw)[60:]
+    bars = _render("bars", 300, **kw)[60:]
+    assert fw.mean() > 0.7 * bars.mean()
+    assert (fw.max(axis=1) < 13).mean() < 0.02
 
 
-def test_the_cinema_floor_does_not_flatten_the_wash():
-    """The floor is the trough, not the whole wash. Clamping at ``floor``
-    itself gave every pixel exactly that value and one even bar."""
-    late = _render("cinema", 900, energy=0.05, dialogue=0.9, brightness=0.9)[400:]
-    frame = late[-1].max(axis=0)
-    assert frame.max() - frame.min() > 0.02 * max(frame.mean(), 1e-9)
+def test_freqwave_has_some_colour_across_the_strip():
+    """A single flat hue left the eye nothing but level to hold on to."""
+    frames = _render("freqwave", 300, energy=0.6, brightness=0.9,
+                     onset_rate=0.4, centroid_hz=900.0)[60:]
+    norm = frames / np.maximum(frames.max(axis=1, keepdims=True), 1e-6)
+    assert norm.std(axis=2).mean() > 0.01
 
 
-def test_cinema_scale_follows_brightness():
-    """Brightness is what makes the wash belong to the music: narrow dark
-    material gets one long arch, wide bright material several ripples."""
-    def ripples(b):
-        f = _render("cinema", 900, energy=0.05, dialogue=0.9, brightness=b)[-1]
-        v = f.max(axis=0)
-        return int(np.sum(np.diff(np.sign(np.diff(v))) != 0))
-    assert ripples(0.95) > ripples(0.05)
+def test_freqwave_stays_one_colour_on_narrow_material():
+    """The fan is driven by spectral spread, so the pitch-hue idea survives:
+    a narrow sound must still paint the strip a single colour."""
+    def span(b):
+        f = _render("freqwave", 300, energy=0.6, brightness=b,
+                    onset_rate=0.4, centroid_hz=900.0)[-1]
+        # Normalise each pixel to its own peak, then measure how that colour
+        # ratio varies *along the strip*. Taking the spread across channels
+        # instead measures saturation, which is the same for every pixel of a
+        # uniform hue and so cannot detect a fan at all.
+        n = f / np.maximum(f.max(axis=0, keepdims=True), 1e-6)
+        return n.std(axis=1).mean()
+    assert span(0.0) < span(0.9)
+
+
+# ── the two effects that were too dim to read ────────────────────────────────
+def test_the_ambient_effects_are_not_dimmer_than_the_library():
+    """Both mapped the Mel bands straight to brightness while `bars` applied a
+    display curve. dsp.mel_exponent squares the filterbank for analysis, which
+    is exactly wrong for brightness: measured on real music, noisemeter ran at
+    a mean of 19/255 against bars' 50 with 7.6% of pixels under 13/255.
+    Texture you cannot see is not subtle."""
+    kw = dict(energy=0.6, brightness=0.5, onset_rate=0.4, centroid_hz=900.0)
+    bars = _render("bars", 300, **kw)[60:]
+    for name in ("freqwave", "noisemeter"):
+        got = _render(name, 300, **kw)[60:]
+        assert got.mean() > 0.5 * bars.mean(), name
+        # Bright *somewhere*, rather than "never dark anywhere". A noise field
+        # is supposed to have dark troughs -- what was wrong was the whole
+        # strip sitting in a narrow band, not the existence of dark pixels.
+        assert np.percentile(got.max(axis=1), 90) > 100, name
+
+
+def test_the_ambient_wash_is_not_slowed_by_beat_pacing():
+    """Pacing is centred so unity falls at onset_rate 0.5, which means
+    sustained material runs at about half speed. Right for a scroll, wrong for
+    the effect chosen *because* the music is calm -- its drift halved on
+    exactly the material it exists for."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    s = Settings.load(overrides={"output": {"pixels": 60}})
+    e = EFFECTS["noisemeter"](s, 60)
+    f = Features(mel=np.ones(s.dsp.fft_bins) * 0.5, volume=0.4, energy=0.5,
+                 onset_rate=0.0, t=0.0)
+    for i in range(120):
+        f.t = i / 60.0
+        e.render(f)
+    assert e.clock.t == pytest.approx(2.0, abs=0.1)
+
+
+def test_the_speed_control_still_reaches_an_unpaced_effect():
+    """Opting out of beat pacing must not opt out of the global speed knob."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    def drift(speed):
+        s = Settings.load(overrides={"output": {"pixels": 60},
+                                     "effect": {"speed": speed}})
+        e = EFFECTS["noisemeter"](s, 60)
+        f = Features(mel=np.ones(s.dsp.fft_bins) * 0.5, volume=0.4, onset_rate=0.0)
+        for i in range(120):
+            f.t = i / 60.0
+            e.render(f)
+        return e.clock.t
+    assert drift(0.25) < drift(1.0)
+
+
+def test_fire_drifts_at_the_same_speed_as_everything_else_that_travels():
+    """A simulation pass moves heat exactly one pixel, so the pass rate is a
+    travel speed. Left at one pass per frame it ran heat at 53.7 px/s while
+    scroll, waterfall and pixelwave had been brought down to 16."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    s = Settings.load(overrides={"output": {"pixels": 60}})
+    e = EFFECTS["fire"](s, 60)
+    f = Features(mel=np.ones(s.dsp.fft_bins) * 0.5, volume=0.4, energy=0.5,
+                 onset_rate=0.5, t=0.0)
+    drift = 0.0
+    for i in range(600):
+        f.t = i / 60.0
+        e.clock.advance(f)
+        drift += e.clock.dt * s.effect.travel_pixels_per_second
+    assert drift / 10.0 == pytest.approx(s.effect.travel_pixels_per_second, rel=0.35)
+
+
+def test_fire_is_not_the_brightest_thing_in_the_library():
+    """Running a cooling pass per frame left it at a mean of 141/255 against
+    bars' 50 -- the flame was not just fast, it was blown out. Cooling is per
+    pass, so a slower pass rate has to cool harder to hold the same height."""
+    kw = dict(energy=0.6, onset_rate=0.5, onset=0.3, brightness=0.5)
+    fire = _render("fire", 600, beat=lambda i: i % 20 == 0, **kw)[120:]
+    bars = _render("bars", 600, **kw)[120:]
+    assert fire.mean() < 2.0 * bars.mean()
+
+
+def test_gravity_is_not_paced_by_the_music():
+    """Displacement goes as dt squared, so pacing scaled the fall
+    quadratically: on sustained material the marker fell at a quarter speed
+    and read as stuck."""
+    from ambviz.effects import EFFECTS
+    from ambviz.features import Features
+    s = Settings.load(overrides={"output": {"pixels": 60}})
+    g = EFFECTS["gravcenter"](s, 60)
+    loud = Features(mel=np.ones(s.dsp.fft_bins) * 0.9, volume=0.4, energy=0.9,
+                    onset_rate=0.3, t=0.0)
+    for i in range(60):
+        loud.t = i / 60.0
+        g.render(loud)
+    peak = g.peak
+    quiet = Features(mel=np.zeros(s.dsp.fft_bins), volume=0.4, onset_rate=0.0, t=1.0)
+    for i in range(180):
+        quiet.t = 1.0 + i / 60.0
+        g.render(quiet)
+    # 9.8 px/s^2 over 60 px is a ~3.5 s fall, so three seconds does not reach
+    # the bottom -- but paced it only managed 4 px in two seconds.
+    assert g.peak < peak - 35, f"peak barely fell: {peak} -> {g.peak}"
+
+
+def test_the_noise_field_uses_the_whole_brightness_range():
+    """"Subtle" was not too little motion, it was too little contrast. Three
+    summed sines almost never align, so the field spanned only 0.20-0.88 of the
+    level and every pixel sat in a band around mid grey -- never dark, never
+    bright. Level was also taken from a mean over eight bands, a far smaller
+    number than any one of them."""
+    kw = dict(energy=0.5, onset_rate=0.2, brightness=0.5)
+    noise = _render("noisemeter", 900, **kw)[120:]
+    bars = _render("bars", 900, **kw)[120:]
+    val = noise.max(axis=1)
+    assert np.percentile(val, 90) > 120, "never gets bright"
+    assert val.std(axis=1).mean() > 0.7 * bars.max(axis=1).std(axis=1).mean()

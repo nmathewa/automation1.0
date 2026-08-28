@@ -56,6 +56,310 @@ class Output:
     pixels: int = 60
     """LEDs actually being driven. May be fewer than the strip's physical length."""
 
+    segments: tuple[int, ...] = ()
+    """Pixel counts of each run in a multi-sided rig, in wiring order.
+
+    Empty means one strip of ``pixels``, which is what every earlier config
+    describes and stays the default. ``(30, 60, 30)`` is a three-sided room:
+    left wall, front wall, right wall, wired as one chain.
+
+    ``pixels`` must equal the sum, and is filled in automatically when it does
+    not -- a rig described twice, once as a total and once as its parts, is a
+    rig whose two descriptions will eventually disagree.
+
+    The **widest** segment is the front and carries the animation exactly as a
+    single strip would. Every other side is a *wall wash*: the light spilling
+    off the nearest end of the front, heavily blurred. Copying the animation
+    onto the sides instead makes three competing focal points; a wash makes one
+    picture with the room lit around it."""
+
+    side_mode: str = "stereo"
+    """What the side walls show: ``"stereo"`` or ``"wash"``.
+
+    ``stereo`` is the point of having two of them. Each wall is driven by its
+    own channel, so a hard-panned guitar lights one side and not the other, and
+    coloured by the *second* most prominent stem -- the thing the mix contains
+    that the front wall is not already telling you about. Together they read as
+    the stereo image standing in the room rather than as decoration.
+
+    ``wash`` is the simpler fallback: blurred light off the nearest end of the
+    front. Used automatically when the source is mono or no separator is
+    running, since neither channel nor stem information exists then."""
+
+    side_animation: str = "freqwave"
+    """Which animation the side walls run.
+
+    Fixed, and deliberately not the one the front is running. Cloning the
+    front's animation onto three surfaces gives a room with three competing
+    focal points and no centre; the front should be what you look *at* and the
+    sides what you see around it. A quiet, structureless effect is the right
+    shape for that -- position must stop meaning frequency the moment you leave
+    the wall you are facing.
+
+    ``freqwave`` is the default because it is structureless in the right way:
+    one hue across the whole run, so position never means frequency, but that
+    hue follows the channel's own pitch and its brightness follows the
+    channel's own level. A pure noise field is quieter still and throws the
+    per-channel colour away, which is most of what the sides have to say.
+
+    Set to ``""`` to follow the front instead."""
+
+    side_brightness: float = 1.0
+    """How bright the sides run relative to the front, 0-1.
+
+    At 1.0 the walls sit at the same level as the centre, which is what a rig
+    of one continuous strip actually looks like. Lower it if the centre should
+    lead on brightness as well as on detail."""
+
+    track_gap: float = 0.35
+    """Seconds of silence taken to mean a new track has started.
+
+    Everything about the uplift is judged against how loud this song has been,
+    and playback does not stop between songs -- so without this a quiet track
+    followed by a loud one produces an enormous surge in its first bar, from a
+    floor belonging to a different piece of music entirely.
+
+    A third of a second is longer than any musical rest and shorter than the
+    pause between tracks in almost any player. **It cannot see a boundary that
+    has no gap**: gapless albums and crossfaded playlists run on as one piece,
+    which is wrong but harmless -- the floor still adapts within a few seconds,
+    it just does not get a fresh warm-up. 0 disables the reset."""
+
+    uplift_warmup: float = 12.0
+    """Seconds of music before any uplift may fire.
+
+    Measured from the start of the *current track*, not from startup, so every
+    song gets its own baseline.
+
+    The surge is measured against how quiet the song has recently been, and at
+    the start there is no "recently" -- the floor has heard one passage and has
+    no idea whether it was loud or soft for this track. Waiting gives it a
+    baseline to judge against, which matters because the moments worth catching
+    almost never arrive in the first few seconds anyway: a song builds first."""
+
+    uplift_surge_db: float = 11.0
+    """How far the level must jump above its recent floor to lift the room, dB.
+
+    The most reliable thing about a drop is what comes *before* it. Songs build,
+    strip back to almost nothing, and then everything arrives at once -- so a
+    large rise measured against how quiet it just was finds the moment far more
+    dependably than any measure of how much is playing, which is high through
+    a whole loud chorus and says nothing about where the chorus began.
+
+    11 dB is roughly a threefold jump in level. Lower to catch gentler lifts;
+    raise it to hold out for the big ones. 0 disables the criterion."""
+
+    uplift_floor_recovery: float = 4.0
+    """How fast the quiet reference climbs back, dB per second.
+
+    The floor drops to any new low at once and recovers slowly, so it remembers
+    the quiet the song just passed through. Recovering quickly would let a
+    breakdown be forgotten before the drop lands on it -- which is precisely
+    the pair of moments this exists to connect."""
+
+    unison_full_trigger: float = 0.88
+    """Fullness that lifts the room on its own, 0-1.
+
+    The second way in. Most uplifts are a rise out of quiet and are found by
+    ``uplift_surge_db``, but some passages simply are enormous -- a final
+    chorus with every part playing, arrived at gradually rather than dropped
+    into -- and there is no surge to find because nothing ever got quiet.
+
+    Set well above ``unison_threshold`` on purpose. The two are not
+    alternatives at the same level: at 0.68 fullness alone put the room in
+    unison for 79% of an ordinary verse, because it is high through anything
+    loud and says nothing about where that passage began. This is the bar for
+    "there is nothing left to add". 1.0 disables it and leaves only the surge."""
+
+    unison_threshold: float = 0.55
+    """How full the music must be for an uplift to count, 0-1.
+
+    A gate, not a trigger. Fullness is high through an entire chorus and says
+    nothing about where the chorus began, so on its own it put the room in
+    unison for 79% of an ordinary verse. What fires an uplift is the level
+    surge; this only stops one being claimed by a sudden loud noise in an
+    otherwise empty passage.
+
+    At a drop, a chorus, a passage with everything playing at once, the sides
+    stop having their own job and mirror the front exactly. Splitting the room
+    into a focus and its surroundings is right for most of a song and wrong at
+    its biggest moment -- that is when it should read as one surface, and the
+    walls agreeing with the centre is what makes it lift.
+
+    Fullness is energy, onset density and -- when a separator is running -- how
+    many instruments are actually present at once, which is the part a spectrum
+    cannot see. 1.0 disables it."""
+
+    unison_beats: float = 4.0
+    """How long the room stays in unison, in beats of the music.
+
+    An uplift is a moment, not a state. Held for as long as the music stays
+    loud it stops being an event and becomes the new normal -- and then the
+    room has no focus for the rest of the chorus. Four beats is about a bar:
+    long enough to land, short enough that the room returns and the *next* one
+    can land too.
+
+    It re-arms only once the music has dropped back below the threshold, so a
+    long loud section lifts once at its start rather than pulsing throughout."""
+
+    unison_response: float = 1.0
+    """Seconds for the room to ease *out* of unison.
+
+    It swells in about four times faster. Snapping between two arrangements of
+    the room on a single loud bar reads as a fault, and a slow swell reads as
+    the music arriving -- but a symmetric response slower than the hold it has
+    to fill can never reach full at all, which is a subtler way of the effect
+    never being seen."""
+
+    accent_animation: str = "scroll"
+    """Which animation bursts across a wall when an event lands there.
+
+    Brightness alone says "something happened" and nothing more. A travelling
+    animation says what *kind* of something, and reads as an event crossing the
+    room rather than a lamp being turned up. Any of the fast effects suit it --
+    ``scroll``, ``pixelwave``, ``puddles``, ``waterfall``.
+
+    It is paced to cross the wall once per ``accent_decay``, whatever the wall's
+    length and whatever the library's own travel speed is: a burst that has not
+    arrived by the time it fades has not happened. Set to ``""`` to go back to
+    a plain brightness lift."""
+
+    accent_strength: float = 1.0
+    """How completely an event takes over the wall it lands on, 0-1.
+
+    The walls carry the width of the mix, which is a slow and quiet signal --
+    true to the audio and, on its own, not much to look at. This is the other
+    half: when something happens in the song, one wall answers.
+
+    It is a crossfade, not a lift. There is no headroom to add into -- the
+    strip already runs at full brightness, so an additive accent only clips and
+    a lit wall cannot get brighter. What makes the event visible instead is
+    that the walls' ambience is held at ``side_brightness`` of the front,
+    leaving the top of the range free, and that what fades in is a *travelling*
+    animation rather than a level.
+
+    0 disables it and leaves the walls purely ambient."""
+
+    accent_alternate: bool = True
+    """Send consecutive events to opposite walls.
+
+    A hit on both walls at once is just a brighter room. Alternating makes the
+    music appear to move across the space -- which is the effect a pair of side
+    walls exists to produce, and the one thing they can do that the front
+    cannot. Set False to light both together."""
+
+    accent_beats: float = 2.0
+    """Minimum gap between accents, in beats of the music itself.
+
+    A gap fixed in seconds is right at one tempo and wrong at every other. It
+    worked on fast material -- where a beat happens to be about as long as the
+    fade -- and fired far too often on anything slower, because the onset
+    detector still finds the subdivisions between the beats and each one took a
+    turn.
+
+    Measured from the actual spacing between onsets, so 2.0 means "at most one
+    accent every other beat" and stays true whether that is 0.3 s or 1.2 s.
+    Two beats is close enough together that the alternation between the walls
+    reads as a pattern rather than as isolated flashes."""
+
+    accent_stem_change: float = 0.0
+    """How far the instrument balance must move to count as an event, 0-1.
+
+    Off by default. The idea is sound -- an arrangement change is what a
+    listener would call "the music changed", where a spectral onset fires on
+    every hi-hat -- but in practice the separator misses events and reports the
+    ones it catches about a second late, because it works on a one-second
+    window and is a second behind by construction. Judged against onsets, which
+    are exact and immediate, it read as both incomplete and out of time.
+
+    The mechanism is kept because the model may be run faster or a causal one
+    substituted later; raise this above 0 to switch it back on."""
+
+    accent_threshold: float = 0.35
+    """How strong an onset must be to move the accent, 0-1.
+
+    Every hi-hat would otherwise take a turn and the alternation would blur
+    into a flicker. Only events that stand out get a wall."""
+
+    accent_length_beats: float = 1.0
+    """How long an accent lasts, in beats of the music.
+
+    Drives the fade *and* how fast the burst crosses the wall, so both follow
+    the tempo. This is what was missing: with the length fixed in seconds the
+    burst was tuned for one tempo and wrong at every other -- it looked right
+    on fast material, where a beat happens to be about as long as the fade, and
+    on slower music the same burst crawled and lost its connection to the beat
+    entirely.
+
+    At 1.0 an accent occupies exactly one beat, so it has finished by the time
+    the next one is due."""
+
+    accent_decay: float = 0.15
+    """Shortest an accent may last, in seconds.
+
+    A floor under ``accent_length_beats`` only, so that very fast material does
+    not reduce the burst to a flicker too brief to see."""
+
+    accent_attack: float = 0.12
+    """Seconds for an accent to reach full.
+
+    Not zero. Jumping straight to full brightness reads as a strobe however
+    slowly it then fades -- the eye takes the edge, not the envelope. A short
+    rise turns the same event into something that arrives."""
+
+    stereo_emphasis: float = 0.7
+    """How much of each side shows what is *unique* to its channel, 0-1.
+
+    At 0 a wall is driven by everything its speaker plays. That sounds like the
+    right answer and looks like the wrong one: in a normal mix both channels
+    carry nearly the whole arrangement, so both walls end up showing what the
+    front is already showing. Measured on real material, the two walls came out
+    96% identical even with the channels correctly separated.
+
+    Raising it subtracts the other channel band by band, so a wall shows only
+    what its own side has that the other does not -- centred material drops out
+    of both walls and lives on the front where it belongs, while a hard-panned
+    guitar lights one wall alone. That contrast is the stereo image; the shared
+    part of the mix was never carrying any."""
+
+    stereo_threshold: float = 0.10
+    """How differently the channels must behave before the sides split, 0-1.
+
+    Measured as each band's level imbalance, weighted by that band's own
+    energy, so it answers "how much of this mix is actually panned" rather than
+    "do the channels differ anywhere at all".
+
+    Real material sits lower than intuition suggests. A track with obvious
+    stereo width measured **0.01**: its channels were decorrelated -- reverb,
+    spread, phase -- but carried the same spectrum at the same level in every
+    band. Magnitude cannot see phase, so there was nothing for a wall to show
+    that the front was not already showing, and the honest answer is to fall
+    through to the stem instead. Hard-panned arrangements clear this easily;
+    most modern masters will not, and should not."""
+
+    stereo_threshold: float = 0.18
+    """How differently the channels must behave before the sides split, 0-1.
+
+    Below this the two walls would be showing the same thing twice, which is
+    worse than showing one thing well. Most studio mixes sit low; a wide or
+    hard-panned arrangement clears it easily."""
+
+    wash_span: float = 0.35
+    """Fraction of the front wall that feeds each side's wash, 0-1.
+
+    0.35 means each side takes its colour from the outer third of the front,
+    which is roughly what a wall that distance away would actually catch.
+    Larger pulls colour from further across the front and makes the two sides
+    resemble each other; smaller ties each side tightly to its own corner."""
+
+    wash_softness: float = 0.6
+    """How hard the wash is blurred, as a fraction of the span, 0-1.
+
+    The point of a wash is that it carries colour and level without structure
+    -- position must stop meaning frequency the moment you leave the front
+    wall. At 0 the sides show a recognisable squashed copy of the animation,
+    which is the thing this exists to avoid."""
+
     max_pixels_per_packet: int = 126
     """Pixels per UDP datagram. 126 x 4 bytes = 504, inside the firmware's 1024 buffer."""
 
@@ -401,6 +705,33 @@ class Mood:
     """Seconds to fade between animations. Effects carry internal state, so
     swapping instantly shows a visible discontinuity; fading hides it."""
 
+    stem_weight: float = 0.0
+    """How far the Demucs stem balance replaces the DSP estimate, 0-1.
+
+    Off by default: it needs ``torch``, a GPU to be comfortable, and a few
+    hundred MB of weights, none of which the visualizer should require. At 1.0
+    the stem balance is trusted outright where it is available.
+
+    What it improves is the *scoring* terms, which is where the classifier
+    keeps failing -- measured against ground truth over 33 s of real music with
+    2 s smoothing, drums correlate 0.98 and vocals 0.96, against YAMNet groups
+    that read 0.000 through the same material. ``bass`` correlates 0.65 and is
+    deliberately not consumed anywhere."""
+
+    stem_window: float = 1.0
+    """Seconds of audio each separation looks at."""
+
+    stem_interval: float = 0.5
+    """Seconds between separations. 19.3 ms of GPU each on a 4050, so this is
+    about how fast an instrument balance should move, not about compute."""
+
+    stem_smoothing: float = 2.0
+    """Seconds of smoothing on the stem shares.
+
+    The published balance is roughly a second stale by construction, and the
+    unsmoothed number is close to useless at that lag (0.62 correlation). Two
+    seconds of smoothing takes it to 0.85, four to 0.89."""
+
     scene_interval: float = 0.5
     """Seconds between classifications. The model costs under a millisecond, so
     this is about how fast a scene label should move, not about CPU."""
@@ -436,7 +767,7 @@ class Effect:
     is integrated rather than derived from the clock, so turning this down mid
     scene slows the motion without jumping it."""
 
-    travel_pixels_per_second: float = 16.0
+    travel_pixels_per_second: float = 24.0
     """How fast ``scroll`` and ``pixelwave`` move light along the strip.
 
     Both used to shift exactly one pixel per frame, which is not a speed at all
@@ -446,9 +777,11 @@ class Effect:
     rather than with it. Expressed per second instead, the look no longer
     changes when fps or strip length does.
 
-    16 px/s crosses a 60-pixel strip in 3.75 s, near a two-bar phrase at 120
-    BPM. Sub-pixel movement is carried between frames rather than rounded away,
-    so slow speeds still travel smoothly."""
+    24 px/s crosses a 60-pixel strip in about 2.1 s at typical onset density --
+    roughly a bar at 120 BPM. It was 16 for a while, which measured 3.16x slower
+    than the per-frame original and read as sluggish once the rest of the
+    library stopped racing. Sub-pixel movement is carried between frames rather
+    than rounded away, so slow speeds still travel smoothly."""
 
     travel_beat_response: float = 0.8
     """How much the travel speed follows the music, 0-1.
@@ -550,6 +883,82 @@ class Settings:
 
         if self.output.pixels < 1:
             problems.append("output.pixels must be >= 1")
+        if self.output.side_mode not in ("stereo", "wash"):
+            problems.append(
+                f"output.side_mode must be 'stereo' or 'wash', "
+                f"got {self.output.side_mode!r}")
+        if self.output.side_animation:
+            from ambviz.effects import EFFECTS  # noqa: PLC0415
+
+            if self.output.side_animation not in EFFECTS:
+                problems.append(
+                    f"unknown output.side_animation {self.output.side_animation!r}; "
+                    f"expected \"\" or one of {sorted(n for n in EFFECTS if n != 'auto')}")
+            elif self.output.side_animation == "auto":
+                problems.append("output.side_animation must not be 'auto'")
+        if not 0.0 < self.output.side_brightness <= 1.0:
+            problems.append("output.side_brightness must be above 0 and at most 1.0")
+        if self.output.track_gap < 0:
+            problems.append("output.track_gap must not be negative")
+        if self.output.uplift_warmup < 0:
+            problems.append("output.uplift_warmup must not be negative")
+        if self.output.uplift_surge_db < 0:
+            problems.append("output.uplift_surge_db must not be negative")
+        if self.output.uplift_floor_recovery <= 0:
+            problems.append("output.uplift_floor_recovery must be positive")
+        if not 0.0 <= self.output.unison_full_trigger <= 1.0:
+            problems.append("output.unison_full_trigger must be between 0.0 and 1.0")
+        if self.output.unison_full_trigger < self.output.unison_threshold:
+            warnings.append(
+                f"output.unison_full_trigger ({self.output.unison_full_trigger}) is "
+                f"below unison_threshold ({self.output.unison_threshold}), so fullness "
+                f"alone lifts the room wherever the gate would have allowed it"
+            )
+        if not 0.0 <= self.output.unison_threshold <= 1.0:
+            problems.append("output.unison_threshold must be between 0.0 and 1.0")
+        if self.output.unison_beats <= 0:
+            problems.append("output.unison_beats must be positive")
+        if self.output.unison_response <= 0.0:
+            problems.append("output.unison_response must be positive")
+        if self.output.accent_animation:
+            from ambviz.effects import EFFECTS  # noqa: PLC0415
+
+            if self.output.accent_animation not in EFFECTS:
+                problems.append(
+                    f"unknown output.accent_animation "
+                    f"{self.output.accent_animation!r}; expected \"\" or one of "
+                    f"{sorted(n for n in EFFECTS if n != 'auto')}")
+            elif self.output.accent_animation == "auto":
+                problems.append("output.accent_animation must not be 'auto'")
+        if not 0.0 <= self.output.accent_strength <= 1.0:
+            problems.append("output.accent_strength must be between 0.0 and 1.0")
+        if self.output.accent_beats < 0:
+            problems.append("output.accent_beats must not be negative")
+        if not 0.0 <= self.output.accent_stem_change <= 1.0:
+            problems.append("output.accent_stem_change must be between 0.0 and 1.0")
+        if not 0.0 <= self.output.accent_threshold <= 1.0:
+            problems.append("output.accent_threshold must be between 0.0 and 1.0")
+        if self.output.accent_length_beats <= 0:
+            problems.append("output.accent_length_beats must be positive")
+        if self.output.accent_attack < 0.0:
+            problems.append("output.accent_attack must not be negative")
+        if self.output.accent_decay <= 0.0:
+            problems.append("output.accent_decay must be positive")
+        if not 0.0 <= self.output.stereo_emphasis <= 1.0:
+            problems.append("output.stereo_emphasis must be between 0.0 and 1.0")
+        if not 0.0 <= self.output.stereo_threshold <= 1.0:
+            problems.append("output.stereo_threshold must be between 0.0 and 1.0")
+        if not 0.0 < self.output.wash_span <= 1.0:
+            problems.append("output.wash_span must be above 0 and at most 1.0")
+        if not 0.0 <= self.output.wash_softness <= 1.0:
+            problems.append("output.wash_softness must be between 0.0 and 1.0")
+        if self.output.segments:
+            if any(s < 1 for s in self.output.segments):
+                problems.append("every output.segments entry must be >= 1")
+            elif sum(self.output.segments) != self.output.pixels:
+                # Derived rather than rejected: the segments are the physical
+                # description and the total is a consequence of it.
+                self.output.pixels = sum(self.output.segments)
         if self.output.device not in ("udp", "none"):
             problems.append(f"output.device must be 'udp' or 'none', got {self.output.device!r}")
         if self.audio.source not in ("mic", "loopback", "synth", "wav"):
@@ -631,6 +1040,11 @@ class Settings:
             problems.append("mood.change_threshold must be positive")
         if m.max_dwell < m.switch_dwell:
             problems.append("mood.max_dwell must be at least mood.switch_dwell")
+        if not 0.0 <= m.stem_weight <= 1.0:
+            problems.append("mood.stem_weight must be between 0.0 and 1.0")
+        if m.stem_window <= 0 or m.stem_interval <= 0 or m.stem_smoothing <= 0:
+            problems.append("mood.stem_window, stem_interval and stem_smoothing "
+                            "must be positive")
         if not 0.0 <= m.scene_weight <= 1.0:
             problems.append("mood.scene_weight must be between 0.0 and 1.0")
         if m.scene_interval <= 0:

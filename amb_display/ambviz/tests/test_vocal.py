@@ -71,7 +71,7 @@ def test_suppression_leaves_rhythm_alone():
     counts = []
     for amount in (0.0, 0.9):
         v = Visualizer(Settings.load(overrides={
-            "effect": {"name": "cinema"}, "dsp": {"vocal_suppression": amount},
+            "effect": {"name": "spectrum"}, "dsp": {"vocal_suppression": amount},
             "mood": {"scene_weight": 0.0}}))
         n = v.samples_per_frame
         before = v.beats

@@ -19,6 +19,104 @@ import numpy as np
 
 from ambviz.dsp import ExpFilter
 from ambviz.scene import Scene
+from ambviz.stems import Stems
+
+
+@dataclass
+class StereoImage:
+    """What each channel is doing on its own, as low/mid/high thirds, 0-1.
+
+    The pipeline folds stereo to mid and side immediately, because that is what
+    the spectrum and the vocal suppression want. Neither says which *speaker* a
+    sound is coming out of, and a room rig has a wall on each side of the
+    listener -- so a hard-panned guitar should light one wall and not the other,
+    which needs the channels kept apart rather than summed.
+
+    Computed only when the rig actually has sides. A plain strip pays nothing.
+    """
+
+    left: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    right: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    available: bool = False
+
+    left_mel: np.ndarray | None = None
+    """The left channel's own filterbank, so a side can be *driven* by it
+    rather than merely tinted from it."""
+
+    right_mel: np.ndarray | None = None
+
+    left_centroid_hz: float = 0.0
+    """Each channel's own spectral centroid, in Hz.
+
+    Swapping only the filterbank is not enough to make a wall look like its own
+    channel: several effects take their *colour* from the centroid, so with a
+    shared one the two walls came out the same hue and differed only in
+    brightness -- which reads as one picture drawn twice."""
+
+    right_centroid_hz: float = 0.0
+
+    side_mel: np.ndarray | None = None
+    """The difference signal's own filterbank -- everything *not* centred.
+
+    This is where a normal mix keeps its stereo information. The two channels
+    of a modern master carry almost the same magnitude spectrum (measured: band
+    imbalance of 0.006-0.012), so comparing them says very little; but L - R
+    isolates the reverb, the spread and the wide synths, and its spectral shape
+    differs from the mix's by a wide margin -- 0.622 similarity against the
+    0.99 the channels themselves manage.
+
+    It is also why a side wall is dark at the bottom: bass is mono in almost
+    every mix, so almost none of it survives the subtraction. That is correct,
+    not a fault."""
+
+    side_level: float = 0.0
+    """How wide the mix is right now, 0-1."""
+
+    @property
+    def difference(self) -> float:
+        """How differently the two channels are behaving, 0-1.
+
+        Mean absolute difference between the channels' filterbanks, normalised
+        by their combined level -- so it answers "are these carrying different
+        material", not "is one louder". A mono file scores 0; a hard-panned
+        arrangement approaches 1.
+        """
+        if self.left_mel is None or self.right_mel is None:
+            return 0.0
+        l, r = np.abs(self.left_mel), np.abs(self.right_mel)
+        total = l + r
+        energy = float(total.sum())
+        if energy < 1e-9:
+            return 0.0
+        # Weighted by each band's own energy.
+        #
+        # The unweighted mean counts a near-silent band as loudly as the one
+        # carrying the song, and near-silent bands differ between channels by
+        # large *fractions* of almost nothing. On real material that read 0.650
+        # for a mix whose actual panned share was 0.01 -- so the sides split
+        # when there was nothing to split, and showed the front twice.
+        return float(np.clip((np.abs(l - r) * total).sum() / (total * total).sum(),
+                             0.0, 1.0))
+
+    def level(self, right: bool = False) -> float:
+        bands = self.right if right else self.left
+        return float(max(bands)) if bands else 0.0
+
+    @property
+    def balance(self) -> float:
+        """-1 fully left, 0 centred, +1 fully right."""
+        l, r = self.level(), self.level(True)
+        return 0.0 if l + r < 1e-9 else float((r - l) / (r + l))
+
+    def to_dict(self) -> dict:
+        return {
+            "available": self.available,
+            "left": [round(v, 3) for v in self.left],
+            "right": [round(v, 3) for v in self.right],
+            "balance": round(self.balance, 3),
+            "difference": round(self.difference, 3),
+            "width": round(self.side_level, 3),
+        }
 
 
 @dataclass
@@ -80,6 +178,14 @@ class Features:
 
     scene: Scene = field(default_factory=Scene)
     """What a classifier thinks the audio *is*, when one is running."""
+
+    image: StereoImage = field(default_factory=StereoImage)
+    """Per-channel level, for rigs with a wall on each side of the listener."""
+
+    stems: Stems = field(default_factory=Stems)
+    """What the audio is *made of* -- the drums/bass/other/vocals balance,
+    when a separator is running. Smoothed and about a second stale, so it
+    belongs to the slow layer; nothing frame-timed may read it."""
 
     onset_rate: float = 0.0
     """Onset density, 0-1 -- how beat-driven this passage is."""
