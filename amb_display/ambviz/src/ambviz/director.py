@@ -36,21 +36,69 @@ import numpy as np
 
 from ambviz.features import Features
 
-def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dict[str, float]:
+def score_candidates(f: Features, allowed: tuple[str, ...] | None = None,
+                     stem_weight: float = 0.0) -> dict[str, float]:
     """How well each animation suits this moment, 0-1 each.
 
     Reads only from :class:`~ambviz.features.Features`, so it stays testable
     without audio and replaceable without touching the director.
     """
     scene = f.scene
-    percussive = scene.get("percussion") if scene.available else 0.0
+    # Separated stems, when a separator is running. This is the third and best
+    # source for the same terms: measured against ground truth over 33 s of real
+    # music, drums correlate 0.98 and vocals 0.96 after smoothing, while the
+    # YAMNet groups these terms used to depend on read 0.000 throughout.
+    #
+    # `bass` is deliberately unused. It correlates 0.65 -- the kick and the
+    # bassline share the bottom of the spectrum and no per-bin scalar mask can
+    # separate them, so the number is published for the dashboard and trusted
+    # nowhere.
+    st = f.stems
+    w = stem_weight if st.available else 0.0
+    def _stem(name: str, dsp: float) -> float:
+        """Blend a stem reading toward the DSP estimate by ``mood.stem_weight``."""
+        return (1.0 - w) * dsp + w * st.prominence(name) if w else dsp
+    # Measured, not asserted: YAMNet's ``percussion`` group read 0.000 through a
+    # whole run of ordinary music while the strip was plainly reacting to drums.
+    # A term that is almost always zero is not a weak signal, it is a constant,
+    # and constants cannot rank candidates apart. ``f.percussive`` measures the
+    # same property from the spectrum itself, is always available, and needs no
+    # model; the classifier group is kept only as an upward vote when it does
+    # fire.
+    percussive = _stem("drums",
+                       max(f.percussive,
+                           scene.get("percussion") if scene.available else 0.0))
     electronic = scene.get("electronic") if scene.available else 0.0
-    driven = scene.get("loud") if scene.available else 0.0
-    sustained = max(scene.get("orchestral"), scene.get("acoustic")) if scene.available else 0.0
-    voice = scene.get("voice") if scene.available else 0.0
+    # Every classifier term gets a DSP floor, for the reason above. A group
+    # that reads zero is not a weak vote, it is a constant, and a constant
+    # inside a weighted sum is a permanent handicap: the candidate can never
+    # reach the top of a field whose scores sit within about 0.2 of each other.
+    #
+    # ``loud`` is the clearest case. It covers rock and metal and nothing else,
+    # so it reads 0.000 on the overwhelming majority of music -- and it carried
+    # 45% of ``gravcenter``, 30% of ``fire`` and 25% of ``energy``. Gravcenter
+    # was capped near 0.3 in practice and never once took the strip. Weight
+    # without brightness is what those three actually want, and the spectrum
+    # can say that on its own.
+    driven = max(f.energy * (1.0 - f.brightness),
+                 scene.get("loud") if scene.available else 0.0)
+    # Sustained is the harmonic half of the HPSS split: strings and pads hold
+    # their partials, drums do not. Same failure otherwise -- ``orchestral``
+    # and ``acoustic`` are as narrow as ``loud``.
+    sustained = _stem("other",
+                      max(1.0 - f.percussive,
+                          max(scene.get("orchestral"), scene.get("acoustic"))
+                          if scene.available else 0.0))
+    voice = _stem("vocals", scene.get("voice") if scene.available else 0.0)
 
     # Singing counts toward calm: a voice is something to sit behind, not chase.
-    calm = max(f.dialogue, sustained, voice, 1.0 - f.energy)
+    #
+    # ``sustained`` is deliberately *not* in here. With a DSP floor it is high
+    # on anything harmonic, including a loud wall of synth, and folding that
+    # into calm would send the wash to the top of a scene that wants a
+    # spectrum. Calm means "little is happening", which is what the other three
+    # measure; being sustained is a separate question and is scored separately.
+    calm = max(f.dialogue, voice, 1.0 - f.energy)
 
     # Scored from the DSP features first, because those work on any material.
     # Leaning on the classifier made every candidate score zero whenever it was
@@ -70,17 +118,6 @@ def score_candidates(f: Features, allowed: tuple[str, ...] | None = None) -> dic
         # that is merely loud.
         "waterfall": 0.45 * f.brightness + 0.30 * (1.0 - f.dialogue)
                      + 0.25 * f.onset_rate,
-        # The wash, when it is in the shortlist.
-        "cinema": 0.55 * calm,
-        # Ambient swells, and the only calm candidate in the default shortlist.
-        #
-        # Deliberately not scored on onset_rate. That feature is passed through
-        # an AdaptiveRange, which stretches a near-constant input to fill 0-1 --
-        # measured at 0.92 on a phase-continuous held chord whose raw rate was
-        # 0.51. A (1 - onset_rate) term is therefore worth about 0.02 whatever
-        # the material, and spectrum's energy term wins every time: pacifica
-        # never once took the strip in 43 s of real audio.
-        "pacifica": 0.65 * calm + 0.35 * (1.0 - f.energy),
         # Sparse hits: the only candidate that goes dark between onsets, so it
         # needs a real rhythm rather than just energy.
         "puddles": 0.60 * f.onset_rate + 0.25 * percussive + 0.15 * f.energy,

@@ -133,7 +133,7 @@
   /* strip */
   .strip-wrap { position: relative; }
   #wall { width: 100%; height: 74px; display: block; border-radius: 8px; }
-  #strip { width: 100%; height: 70px; display: block; margin-top: 6px; }
+  #strip { width: 100%; height: 86px; display: block; margin-top: 6px; }
   .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 
   /* chart */
@@ -193,6 +193,16 @@
   }
   details.smoothing summary::before { content: "▸ "; }
   details.smoothing[open] summary::before { content: "▾ "; }
+  /* One bar, four segments, widths = share of energy. Reads as a balance
+     rather than four independent numbers, which is what it is. */
+  .stembar { display: flex; height: 14px; border-radius: 7px; overflow: hidden;
+             background: var(--line); margin: 6px 0 2px; }
+  .stembar i { transition: flex-grow .25s linear; flex-grow: 0; min-width: 0; }
+  .stembar i[data-stem="drums"]  { background: #e8833a; }
+  .stembar i[data-stem="bass"]   { background: #4a6fd0; }
+  .stembar i[data-stem="other"]  { background: #3fae7f; }
+  .stembar i[data-stem="vocals"] { background: #c9558f; }
+  .stembar[data-on="false"] { opacity: .28; }
   .alphas { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; padding-top: 10px; }
   .alpha { display: grid; grid-template-columns: 1fr 62px 62px; gap: 7px; align-items: center; }
   .alpha span { font-size: 11.5px; color: var(--ink-2); }
@@ -333,6 +343,32 @@
         </div>
       </div>
       <div class="ctl">
+        <span>Stem balance <small id="stem-note"></small></span>
+        <div class="stembar" id="stembar" aria-label="Share of energy per separated stem">
+          <i data-stem="drums"></i><i data-stem="bass"></i><i data-stem="other"></i><i data-stem="vocals"></i>
+        </div>
+        <div class="row">
+          <input type="range" id="ctl-stem" min="0" max="1" step="0.05"
+                 aria-label="How far the separated stems replace the DSP estimate">
+          <output id="out-stem">—</output>
+        </div>
+      </div>
+      <div class="ctl" id="ctl-room">
+        <span>Room <small id="room-note"></small></span>
+        <div class="row">
+          <select id="ctl-sidemode" aria-label="What the side walls show">
+            <option value="stereo">Sides: stereo</option>
+            <option value="wash">Sides: wash</option>
+          </select>
+          <select id="ctl-sideanim" aria-label="Animation the side walls run"></select>
+        </div>
+        <div class="row">
+          <input type="range" id="ctl-sidebright" min="0" max="1" step="0.05"
+                 aria-label="Side wall brightness against the front">
+          <output id="out-sidebright">—</output>
+        </div>
+      </div>
+      <div class="ctl">
         <span>Mel bands</span>
         <div class="row">
           <input type="range" id="ctl-bins" min="4" max="64" step="1">
@@ -435,67 +471,111 @@
       return;
     }
 
-    // 2px surface gap between LEDs rather than a stroked border.
-    ctx.fillStyle = PLATE;
-    ctx.beginPath();
-    ctx.roundRect(0, 4, w, h - 12, 8);
-    ctx.fill();
+    const rs = runs(w);
+    const multi = rs.length > 1;
+    const y = multi ? 20 : 12, bh = h - (multi ? 36 : 28);
 
-    const pitch = w / count;
-    const gap = Math.min(2, pitch * 0.22);
-    const bw = Math.max(1, pitch - gap);
-    const radius = Math.min(4, bw / 2);
-    const y = 12, bh = h - 28;
-
-    for (let i = 0; i < count; i++) {
-      const c = rgb(i);
-      const lum = (c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722) / 255;
-      const x = i * pitch + gap / 2;
-      ctx.save();
-      // An LED is a grey dome that also emits, so the emitted colour is
-      // composited *over* the unlit dome rather than replacing it. Drawing
-      // rgb() directly made a lit pixel at luminance 1-3 render darker than
-      // both LED_OFF (36,36,35) and the plate behind it -- dim pixels came
-      // out blacker than off ones, which is what "some pixels are black"
-      // turned out to mean.
-      if (c[0] || c[1] || c[2]) {
-        // Display gamma. A byte sent to a WS2812 is a linear PWM duty, but a
-        // monitor is gamma-encoded, so drawing it raw crushes the bottom of
-        // the range into black. Decoding it is what makes a value of 3 look
-        // like a dim LED in a dark room rather than an unlit one.
-        const em = [0, 1, 2].map(k => 255 * Math.pow(c[k] / 255, 1 / 2.2));
-        // How "on" the LED is -- max channel, not luminance, so a saturated
-        // red counts as fully lit despite its low luminance.
-        const on = Math.max(em[0], em[1], em[2]) / 255;
-        // Fade the dome out as emission takes over, so a bright colour keeps
-        // its saturation instead of picking up the dome's grey.
-        const dome = 1 - Math.min(1, on * 2);
-        const px = [0, 1, 2].map(k => Math.min(255, Math.round(em[k] + OFF_RGB[k] * dome)));
-        // Continuous from zero rather than a cutoff: a faint pixel gets a
-        // faint halo instead of none. The old lum > 0.02 gate left most of
-        // the strip glowless during a quiet passage, and the glow is most of
-        // what makes a pixel read as lit at all.
-        ctx.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},${0.25 + 0.55 * on})`;
-        ctx.shadowBlur = 24 * on;
-        ctx.fillStyle = `rgb(${px[0]},${px[1]},${px[2]})`;
-      } else {
-        ctx.fillStyle = LED_OFF;
-      }
+    for (const r of rs) {
+      // 2px surface gap between LEDs rather than a stroked border.
+      ctx.fillStyle = PLATE;
       ctx.beginPath();
-      ctx.roundRect(x, y, bw, bh, radius);
+      ctx.roundRect(r.x, y - 8, r.width, bh + 16, 8);
       ctx.fill();
-      ctx.restore();
-    }
 
-    if (stripView === "index") {
-      ctx.fillStyle = css("--muted");
-      ctx.font = "10px system-ui, sans-serif";
-      ctx.textAlign = "center";
-      const step = Math.max(1, Math.round(count / Math.floor(w / 34)));
-      for (let i = 0; i < count; i += step) {
-        ctx.fillText(String(i), i * pitch + pitch / 2, h - 1);
+      const pitch = r.width / r.n;
+      const gap = Math.min(2, pitch * 0.22);
+      const bw = Math.max(1, pitch - gap);
+      const radius = Math.min(4, bw / 2);
+
+      for (let i = 0; i < r.n; i++) {
+        const c = rgb(r.from + i);
+        const x = r.x + i * pitch + gap / 2;
+        ctx.save();
+        // An LED is a grey dome that also emits, so the emitted colour is
+        // composited *over* the unlit dome rather than replacing it. Drawing
+        // rgb() directly made a lit pixel at luminance 1-3 render darker than
+        // both LED_OFF (36,36,35) and the plate behind it -- dim pixels came
+        // out blacker than off ones, which is what "some pixels are black"
+        // turned out to mean.
+        if (c[0] || c[1] || c[2]) {
+          // Display gamma. A byte sent to a WS2812 is a linear PWM duty, but a
+          // monitor is gamma-encoded, so drawing it raw crushes the bottom of
+          // the range into black. Decoding it is what makes a value of 3 look
+          // like a dim LED in a dark room rather than an unlit one.
+          const em = [0, 1, 2].map(k => 255 * Math.pow(c[k] / 255, 1 / 2.2));
+          // How "on" the LED is -- max channel, not luminance, so a saturated
+          // red counts as fully lit despite its low luminance.
+          const on = Math.max(em[0], em[1], em[2]) / 255;
+          // Fade the dome out as emission takes over, so a bright colour keeps
+          // its saturation instead of picking up the dome's grey.
+          const dome = 1 - Math.min(1, on * 2);
+          const px = [0, 1, 2].map(k => Math.min(255, Math.round(em[k] + OFF_RGB[k] * dome)));
+          // Continuous from zero rather than a cutoff: a faint pixel gets a
+          // faint halo instead of none.
+          ctx.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},${0.25 + 0.55 * on})`;
+          ctx.shadowBlur = 24 * on;
+          ctx.fillStyle = `rgb(${px[0]},${px[1]},${px[2]})`;
+        } else {
+          ctx.fillStyle = LED_OFF;
+        }
+        ctx.beginPath();
+        ctx.roundRect(x, y, bw, bh, radius);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      if (multi) {
+        ctx.fillStyle = css("--muted");
+        ctx.font = "10px system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText(`${r.name} · ${r.n}`, r.x + 1, y - 12);
+      }
+
+      if (stripView === "index") {
+        // Each run is numbered from its own zero. They are separate strips
+        // with their own controllers; a continuous 0-119 would name a pixel
+        // something nobody wiring the rig would recognise.
+        ctx.fillStyle = css("--muted");
+        ctx.font = "10px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        const step = Math.max(1, Math.round(r.n / Math.max(1, Math.floor(r.width / 34))));
+        for (let i = 0; i < r.n; i += step) {
+          ctx.fillText(String(i), r.x + i * pitch + pitch / 2, h - 1);
+        }
       }
     }
+  }
+
+  // Where each run sits across the canvas.
+  //
+  // The runs are drawn side by side rather than as one continuous bar, because
+  // they are physically separate strips: a gap says "this is where the wall
+  // ends" far more clearly than a label does. The front is drawn slightly
+  // narrower than its pixel count deserves -- at true proportion it takes half
+  // the width and squashes the two sides into strips too thin to read, and the
+  // point of showing the sides at all is to be able to see them.
+  const FRONT_SHRINK = 0.82;
+  const RUN_GAP = 16;
+
+  function runs(w) {
+    const segs = (engine && engine.segments && engine.segments.length > 1)
+      ? engine.segments : [count];
+    if (!count) return [];
+    let front = 0;
+    segs.forEach((n, i) => { if (n > segs[front]) front = i; });
+    const weight = segs.map((n, i) => n * (i === front && segs.length > 1 ? FRONT_SHRINK : 1));
+    const total = weight.reduce((a, b) => a + b, 0) || 1;
+    const usable = Math.max(1, w - RUN_GAP * (segs.length - 1));
+    const names = segs.length === 3 ? ["left", "front", "right"]
+                : segs.length === 2 ? ["front", "back"] : [""];
+    const out = [];
+    let x = 0, from = 0;
+    segs.forEach((n, i) => {
+      const width = usable * weight[i] / total;
+      out.push({ n, from, x, width, name: names[i] || `run ${i + 1}`, isFront: i === front });
+      from += n; x += width + RUN_GAP;
+    });
+    return out;
   }
 
   // Approximates the light the strip throws on a wall: each LED smeared wide
@@ -504,33 +584,68 @@
     const { ctx, w, h } = fit($("wall"));
     ctx.clearRect(0, 0, w, h);
     if (!count) return;
-    const grad = ctx.createLinearGradient(0, 0, w, 0);
-    const stops = Math.min(count, 96);
-    const span = Math.max(1, Math.round(count / stops));
-    for (let s = 0; s <= stops; s++) {
-      const centre = Math.min(count - 1, s * span);
-      let r = 0, g = 0, b = 0, n = 0;
-      for (let k = centre - span * 2; k <= centre + span * 2; k++) {
-        if (k < 0 || k >= count) continue;
-        const c = rgb(k); r += c[0]; g += c[1]; b += c[2]; n++;
+
+    // A wash per run, not one across the whole canvas. These are separate
+    // walls in a room -- light from the front does not continue round the
+    // corner as the same gradient, and drawing it that way made the sides look
+    // like more of the front rather than like their own surfaces.
+    for (const r of runs(w)) {
+      const grad = ctx.createLinearGradient(r.x, 0, r.x + r.width, 0);
+      // Sample by fraction across the run, not by a rounded stride.
+      //
+      // The stride form -- centre = s * round(n / stops) -- silently drops the
+      // tail whenever n does not divide by stops: on the 60-pixel front,
+      // round(60/48) is 1, so it walked to LED 48 and stretched 49 LEDs'
+      // colours across all 60 positions. Everything after the first third sat
+      // to the left of the LED it came from, and by the far end it was eleven
+      // pixels out.
+      const stops = Math.min(r.n, 64);
+      const smear = Math.max(1, Math.round(r.n / 12));
+      const stopsOut = [];
+      let last = -1;
+      for (let s = 0; s <= stops; s++) {
+        const centre = Math.round((s / stops) * (r.n - 1));
+        if (centre === last) continue;          // positions must strictly rise
+        last = centre;
+        let cr = 0, cg = 0, cb = 0, k = 0;
+        for (let q = centre - smear; q <= centre + smear; q++) {
+          if (q < 0 || q >= r.n) continue;
+          const c = rgb(r.from + q); cr += c[0]; cg += c[1]; cb += c[2]; k++;
+        }
+        if (!k) continue;
+        // The stop sits over the LED's *centre*, which is half a pitch in from
+        // the run's edge. Using s/stops put the whole wash half an LED left of
+        // the light making it.
+        const pos = r.n === 1 ? 0.5 : (centre + 0.5) / r.n;
+        stopsOut.push([pos, `rgb(${cr / k | 0},${cg / k | 0},${cb / k | 0})`]);
       }
-      if (!n) continue;
-      grad.addColorStop(Math.min(1, s / stops), `rgb(${r / n | 0},${g / n | 0},${b / n | 0})`);
+      const any = stopsOut.length > 0;
+      if (any) {
+        // Hold the end colours out to the run's edges rather than letting the
+        // gradient fade to nothing over the outer half-pixel.
+        grad.addColorStop(0, stopsOut[0][1]);
+        for (const [pos, col] of stopsOut) {
+          if (pos > 0 && pos < 1) grad.addColorStop(pos, col);
+        }
+        grad.addColorStop(1, stopsOut[stopsOut.length - 1][1]);
+      }
+      if (!any) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.62;
+      ctx.fillStyle = grad;
+      // Rounded so each wash reads as its own panel of light.
+      ctx.beginPath();
+      ctx.roundRect(r.x, 0, r.width, h, 8);
+      ctx.fill();
+      ctx.restore();
     }
-    ctx.fillStyle = grad;
-    ctx.globalAlpha = 0.62;
-    ctx.fillRect(0, 0, w, h);
-    ctx.globalAlpha = 1;
+
     const fade = ctx.createLinearGradient(0, 0, 0, h);
     fade.addColorStop(0, "rgba(0,0,0,0)");
     fade.addColorStop(1, css("--surface"));
     ctx.fillStyle = fade;
     ctx.fillRect(0, 0, w, h);
   }
-
-  // ── channel chart ──────────────────────────────────────────────────────────
-  const PAD = { t: 10, r: 42, b: 22, l: 34 };
-  let plotBox = null;
 
   function drawPlot(hoverIndex) {
     const { ctx, w, h } = fit($("plot"));
@@ -743,8 +858,17 @@
   function render() {
     drawWall(); drawStrip(); drawPlot(hover); drawTable(); drawSpectrum(null);
     if (engine) syncControls(settingsCache) || syncFromEngine();
-    $("scale-mid").textContent = count ? Math.floor(count / 2) : "—";
-    $("scale-end").textContent = count ? count - 1 : "—";
+    // With separate runs the old 0 / mid / last scale names pixels nobody has:
+    // there is no pixel 119 on a rig of three strips, there is a pixel 29 on
+    // the right one. Report the shape instead.
+    const segs = (engine && engine.segments) || [];
+    if (segs.length > 1) {
+      $("scale-mid").textContent = segs.join(" + ");
+      $("scale-end").textContent = count ? `${count} total` : "—";
+    } else {
+      $("scale-mid").textContent = count ? Math.floor(count / 2) : "—";
+      $("scale-end").textContent = count ? count - 1 : "—";
+    }
     if (!stats) return;
 
     const fmt = (v, d = 0) => v.toLocaleString(undefined, { maximumFractionDigits: d });
@@ -924,9 +1048,53 @@
     } else {
       $("drift-note").textContent = "";
     }
+    // Stem balance. `bass` is drawn but is the least trustworthy of the four
+    // (0.65 correlation against ground truth), so nothing keys off it.
+    const st = engine.stems;
+    const bar = $("stembar");
+    if (st && st.available) {
+      bar.dataset.on = "true";
+      for (const seg of bar.children) {
+        const v = Number(st[seg.dataset.stem] || 0);
+        seg.style.flexGrow = String(v);
+        seg.title = `${seg.dataset.stem} ${(v * 100).toFixed(0)}%`;
+      }
+      const top = ["drums", "bass", "other", "vocals"]
+        .reduce((a, b) => (Number(st[a] || 0) >= Number(st[b] || 0) ? a : b));
+      $("stem-note").textContent =
+        `— ${top} leads · ${st.device} ${st.inference_ms}ms`;
+    } else {
+      bar.dataset.on = "false";
+      for (const seg of bar.children) seg.style.flexGrow = "1";
+      $("stem-note").textContent = "— set weight above 0 and restart to enable";
+    }
     if (editing !== "minf") $("ctl-minf").value = engine.min_frequency;
     if (editing !== "maxf") $("ctl-maxf").value = engine.max_frequency;
     $("spectrum-range").textContent = `${engine.min_frequency}–${engine.max_frequency} Hz`;
+  }
+
+  /** The side-wall controls, and whether there are any walls to control.
+   *
+   *  `segments` is the whole feature: without it the rig is one strip, there is
+   *  no side for a side setting to reach, and three live controls that visibly
+   *  do nothing are worse than three disabled ones. It cannot be switched on
+   *  from here either -- it resizes the strip, so it is config-file and restart
+   *  only, which the note has to say outright. */
+  function syncRoom(out, force = false) {
+    const segs = out.segments || [];
+    const room = segs.length > 1;
+    for (const id of ["ctl-sidemode", "ctl-sideanim", "ctl-sidebright"]) {
+      $(id).disabled = !room;
+    }
+    $("room-note").textContent = room
+      ? `— ${segs.join(" · ")} px, front is the widest`
+      : "— one strip; set [output].segments in a config file and restart";
+    if (force || editing !== "sidemode") $("ctl-sidemode").value = out.side_mode;
+    if (force || editing !== "sideanim") $("ctl-sideanim").value = out.side_animation || "";
+    if (force || editing !== "sidebright") {
+      $("ctl-sidebright").value = out.side_brightness;
+      $("out-sidebright").textContent = Number(out.side_brightness).toFixed(2);
+    }
   }
 
   /** Push server values into the widgets, skipping whatever is being dragged.
@@ -957,6 +1125,10 @@
         if (force || editing !== "maxdwell") $("ctl-maxdwell").value = cfg.mood.max_dwell;
         $("out-maxdwell").textContent = `${Math.round(cfg.mood.max_dwell)}s`;
       }
+      if (cfg.mood.stem_weight !== undefined) {
+        if (force || editing !== "stem") $("ctl-stem").value = cfg.mood.stem_weight;
+        $("out-stem").textContent = Number(cfg.mood.stem_weight).toFixed(2);
+      }
       if (force || editing !== "damp") $("ctl-damp").value = cfg.mood.dialogue_damping;
     }
     if (force || editing !== "bins") {
@@ -969,6 +1141,7 @@
       if (editing === `alpha-${input.dataset.alpha}-${input.dataset.slot}`) continue;
       input.value = cfg.smoothing[input.dataset.alpha][Number(input.dataset.slot)];
     }
+    if (cfg.output) syncRoom(cfg.output, force);
     $("spectrum-range").textContent = `${cfg.dsp.min_frequency}–${cfg.dsp.max_frequency} Hz`;
     return true;
   }
@@ -1002,7 +1175,17 @@
   bindLive($("ctl-maxdwell"), "maxdwell",
     (v) => ($("out-maxdwell").textContent = `${Math.round(v)}s`),
     (v) => ({ mood: { max_dwell: Number(v) } }));
+  bindLive($("ctl-stem"), "stem",
+    (v) => ($("out-stem").textContent = Number(v).toFixed(2)),
+    (v) => ({ mood: { stem_weight: Number(v) } }));
   bindLive($("ctl-damp"), "damp", () => {}, (v) => ({ mood: { dialogue_damping: Number(v) } }));
+  bindLive($("ctl-sidebright"), "sidebright",
+    (v) => ($("out-sidebright").textContent = Number(v).toFixed(2)),
+    (v) => ({ output: { side_brightness: Number(v) } }));
+  bindSelect($("ctl-sidemode"), () => settingsCache?.output?.side_mode,
+    (v) => ({ output: { side_mode: v } }));
+  bindSelect($("ctl-sideanim"), () => settingsCache?.output?.side_animation ?? "",
+    (v) => ({ output: { side_animation: v } }));
   bindLive($("ctl-vocal"), "vocal",
     (v) => ($("out-vocal").textContent = Number(v).toFixed(2)),
     (v) => ({ dsp: { vocal_suppression: Number(v) } }));
@@ -1026,6 +1209,23 @@
     el.addEventListener("input", () => { editing = name; echo(el.value); });
     el.addEventListener("change", () => { editing = null; send(patch(el.value)); });
   }
+  /** Selects: POST only a genuine choice.
+   *
+   *  A browser restoring a form on reload fires `change` with its remembered
+   *  value, which would push a stale selection over whatever the server was
+   *  started with. Reading the server's current value back and comparing is
+   *  what makes the server the authority; it also skips while the settings
+   *  cache is still empty, since "we do not know yet" must mean "do not push".
+   *  Same reasoning as the effect select. */
+  function bindSelect(el, current, patch) {
+    el.addEventListener("change", () => {
+      editing = null;
+      const now = current();
+      if (now === undefined || now === null || el.value === String(now)) return;
+      send(patch(el.value));
+    });
+  }
+
   /** Number fields: POST on blur or Enter. */
   function bindCommit(el, name, patch) {
     el.addEventListener("focus", () => (editing = name));
@@ -1127,6 +1327,18 @@
     if (!names || !names.length || sel.dataset.built === names.join(",")) return;
     sel.dataset.built = names.join(",");
     sel.innerHTML = names.map((n) => `<option value="${n}">${TITLE(n)}</option>`).join("");
+    // The walls take a named animation or "" to follow the front. `auto` is not
+    // offered: the director switches the *front*, and a wall re-deciding on its
+    // own timer is a second focal point, which is the thing the sides exist not
+    // to be.
+    const side = $("ctl-sideanim");
+    side.innerHTML = '<option value="">Sides: follow front</option>' +
+      names.filter((n) => n !== "auto")
+           .map((n) => `<option value="${n}">Sides: ${TITLE(n)}</option>`).join("");
+    // Health and settings race, and assigning `.value` before the options exist
+    // silently does nothing -- leaving the select showing "follow front" for a
+    // rig that is running something else. Re-apply whatever already arrived.
+    if (settingsCache?.output) syncRoom(settingsCache.output, true);
   }
 
   function applyHealth(h) {
