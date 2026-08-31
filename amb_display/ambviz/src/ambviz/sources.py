@@ -1,6 +1,9 @@
 """Audio sources.
 
-``mic`` captures from a real input device through PortAudio. Two bindings are
+``mic`` captures from a real input device through PortAudio, in stereo where
+the device offers it -- which matters far beyond microphones, because a virtual
+cable carrying the machine's own playback (BlackHole on macOS, where there is
+no monitor source for ``loopback`` to read) arrives this way. Two bindings are
 supported: :mod:`sounddevice` is preferred because it binds the PortAudio
 *runtime* and therefore installs from a wheel, while :mod:`pyaudio` has to
 compile against ``portaudio.h`` and fails on any machine without the dev
@@ -36,7 +39,8 @@ class Source:
     suppression possible without a model -- downmix early and that is gone.
     """
 
-    #: Channels this source yields. Only loopback provides two.
+    #: Channels this source yields: 1 for mono, 2 for ``(n, 2)`` stereo.
+    #: An instance may raise its own -- ``mic`` decides from the device.
     channels = 1
 
     def __init__(self, settings: Settings):
@@ -56,6 +60,18 @@ class Source:
         self.close()
 
 
+# Stereo wherever the device has it. Downmixing at the source would discard the
+# side channel that vocal suppression, the stereo image and the room's side
+# walls all read -- the same reason LoopbackSource refuses to -- and on macOS
+# this path *is* the loopback path, since there is no monitor source to capture.
+#
+# Asked for, then tried: a device can advertise inputs it will not open at this
+# rate, and a visualizer that refuses to start is worse than one in mono.
+def _wanted_channels(reported: int) -> tuple[int, ...]:
+    """Channel counts to attempt, best first."""
+    return (2, 1) if reported >= 2 else (1,)
+
+
 class _SoundDeviceMic(Source):
     """Capture via :mod:`sounddevice`."""
 
@@ -64,15 +80,25 @@ class _SoundDeviceMic(Source):
         import sounddevice as sd
 
         self._sd = sd
-        self._stream = sd.InputStream(
-            samplerate=settings.audio.rate,
-            channels=1,
-            dtype="int16",
-            blocksize=self.frame_size,
-            device=resolve_input_device(settings.audio.input_device),
-        )
+        device = resolve_input_device(settings.audio.input_device)
+        self._stream, self.channels = self._open(sd, device)
         self._stream.start()
         self.overflows = 0
+
+    def _open(self, sd, device: int | None) -> tuple[object, int]:
+        for channels in _wanted_channels(_max_input_channels(sd, device)):
+            try:
+                return sd.InputStream(
+                    samplerate=self.settings.audio.rate,
+                    channels=channels,
+                    dtype="int16",
+                    blocksize=self.frame_size,
+                    device=device,
+                ), channels
+            except Exception:
+                if channels == 1:
+                    raise
+        raise RuntimeError("unreachable: the mono attempt always raises or returns")
 
     def frames(self) -> Iterator[np.ndarray]:
         while True:
@@ -83,7 +109,8 @@ class _SoundDeviceMic(Source):
             # of falling further behind it.
             if (available := self._stream.read_available) > self.frame_size:
                 self._stream.read(available)
-            yield block.reshape(-1).astype(np.float32)
+            block = np.asarray(block, dtype=np.float32)
+            yield block if self.channels == 2 else block.reshape(-1)
 
     def close(self) -> None:
         self._stream.stop()
@@ -98,15 +125,25 @@ class _PyAudioMic(Source):
         import pyaudio
 
         self._pa = pyaudio.PyAudio()
-        self._stream = self._pa.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=settings.audio.rate,
-            input=True,
-            input_device_index=resolve_input_device(settings.audio.input_device),
-            frames_per_buffer=self.frame_size,
-        )
+        device = resolve_input_device(settings.audio.input_device)
+        self._stream, self.channels = self._open(pyaudio, device)
         self.overflows = 0
+
+    def _open(self, pyaudio, device: int | None) -> tuple[object, int]:
+        for channels in _wanted_channels(_pyaudio_input_channels(self._pa, device)):
+            try:
+                return self._pa.open(
+                    format=pyaudio.paInt16,
+                    channels=channels,
+                    rate=self.settings.audio.rate,
+                    input=True,
+                    input_device_index=device,
+                    frames_per_buffer=self.frame_size,
+                ), channels
+            except Exception:
+                if channels == 1:
+                    raise
+        raise RuntimeError("unreachable: the mono attempt always raises or returns")
 
     def frames(self) -> Iterator[np.ndarray]:
         while True:
@@ -114,7 +151,10 @@ class _PyAudioMic(Source):
                 raw = self._stream.read(self.frame_size, exception_on_overflow=False)
                 if (available := self._stream.get_read_available()) > self.frame_size:
                     self._stream.read(available, exception_on_overflow=False)
-                yield np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+                samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+                # PortAudio hands back interleaved frames, so stereo is one flat
+                # buffer of L,R,L,R until it is given its shape back.
+                yield samples.reshape(-1, 2) if self.channels == 2 else samples
             except IOError:
                 self.overflows += 1
 
@@ -439,6 +479,28 @@ def make_source(settings: Settings) -> Source:
             f"unknown audio.source {settings.audio.source!r}; "
             f"expected one of {sorted(sources)}"
         ) from None
+
+
+def _max_input_channels(sd, device: int | None) -> int:
+    """How many inputs the chosen device offers, or 1 if it will not say.
+
+    ``None`` means the system default, which is what ``query_devices`` returns
+    for a null device of kind ``input``.
+    """
+    try:
+        return int(sd.query_devices(device, "input")["max_input_channels"])
+    except Exception:
+        return 1
+
+
+def _pyaudio_input_channels(pa, device: int | None) -> int:
+    """The pyaudio spelling of :func:`_max_input_channels`."""
+    try:
+        info = (pa.get_default_input_device_info() if device is None
+                else pa.get_device_info_by_index(device))
+        return int(info["maxInputChannels"])
+    except Exception:
+        return 1
 
 
 def resolve_input_device(device: int | str | None) -> int | None:
