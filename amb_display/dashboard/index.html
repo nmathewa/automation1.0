@@ -209,6 +209,59 @@
   .ctl-err { font-size: 12px; color: var(--crit); min-height: 16px; }
 
   @media (max-width: 720px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+
+  /* signal-flow debug panel */
+  .flow { width: 100%; height: auto; display: block; overflow: visible; }
+  .flow + .flow { margin-top: 4px; }
+  p.flow-band { margin: 14px 0 4px; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; }
+  .fnode rect.box {
+    fill: var(--plane); stroke: var(--axis); stroke-width: 1; rx: 7;
+    transition: stroke .12s, fill .12s;
+  }
+  .fnode text.name { font-size: 12px; font-weight: 600; fill: var(--ink-2); }
+  .fnode text.detail { font-size: 10.5px; fill: var(--muted); }
+  .fnode rect.meter-bg { fill: var(--grid); rx: 2; }
+  .fnode rect.meter { fill: var(--axis); rx: 2; transition: width .1s linear, fill .12s; }
+
+  /* Three states, and they have to be told apart at a glance rather than read:
+     `off` is the one that matters most when debugging -- a stage that is not
+     running at all, as against one that is running with nothing to show. */
+  .fnode[data-state="live"] rect.box { stroke: var(--accent); fill: color-mix(in srgb, var(--accent) 9%, var(--plane)); }
+  .fnode[data-state="live"] text.name { fill: var(--ink); }
+  .fnode[data-state="live"] rect.meter { fill: var(--accent); }
+  .fnode[data-state="idle"] rect.box { stroke: var(--axis); }
+  .fnode[data-state="off"] rect.box { stroke: var(--grid); stroke-dasharray: 3 3; fill: transparent; }
+  .fnode[data-state="off"] text.name,
+  .fnode[data-state="off"] text.detail { fill: var(--grid); }
+  .fnode[data-state="off"] rect.meter-bg, .fnode[data-state="off"] rect.meter { display: none; }
+
+  /* An event is a moment, not a level: it has to be visible at 60 fps without
+     the eye having to be on that node when it happens, hence a decay rather
+     than a state. */
+  .fnode.pulse rect.box {
+    stroke: var(--warn); fill: color-mix(in srgb, var(--warn) 22%, var(--plane));
+    animation: fpulse .45s ease-out;
+  }
+  @keyframes fpulse {
+    from { fill: color-mix(in srgb, var(--warn) 55%, var(--plane)); }
+    to   { fill: color-mix(in srgb, var(--warn) 8%, var(--plane)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fnode.pulse rect.box { animation: none; }
+  }
+
+  .fedge { fill: none; stroke: var(--grid); stroke-width: 1.2; transition: stroke .12s; }
+  .fedge[data-on="true"] { stroke: color-mix(in srgb, var(--accent) 65%, transparent); }
+
+  .flow-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin-top: 10px; }
+  .flow-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .flow-legend i {
+    width: 20px; height: 11px; border-radius: 3px; border: 1px solid var(--axis);
+    background: var(--plane); font-style: normal; flex: none;
+  }
+  .flow-legend i.live { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--plane)); }
+  .flow-legend i.off { border-style: dashed; border-color: var(--grid); background: transparent; }
+  .flow-legend i.evt { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 30%, var(--plane)); }
 </style>
 </head>
 <body>
@@ -226,6 +279,7 @@
       <input id="api-url" name="api" spellcheck="false" autocomplete="off">
       <span id="api-state" data-ok="false">connecting</span>
     </form>
+    <button id="debug" aria-pressed="false" title="Live signal-flow diagram, for debugging">Flow</button>
     <button id="theme" title="Switch theme">Light</button>
   </header>
 
@@ -418,6 +472,28 @@
           <tbody id="tbl-body"></tbody>
         </table>
       </div>
+    </div>
+  </section>
+
+  <section class="card" id="card-flow" hidden>
+    <div class="card-head">
+      <h2>Signal flow</h2>
+      <span class="beat"><span id="flow-note">—</span></span>
+    </div>
+    <p class="flow-band">Fast path — every frame</p>
+    <svg class="flow" id="flow-a" viewBox="0 0 990 232" role="img"
+         aria-label="Fast path: which per-frame stages are running and which are dark"></svg>
+    <p class="flow-band">Slow layer — seconds behind, and it bypasses the fast path</p>
+    <svg class="flow" id="flow-b" viewBox="0 0 990 232" role="img"
+         aria-label="Slow layer: scene, stems and stereo image, and whether each is running"></svg>
+    <p class="flow-band">Render — what reaches the strip</p>
+    <svg class="flow" id="flow-c" viewBox="0 0 990 232" role="img"
+         aria-label="Render path: effect, accents, room and output"></svg>
+    <div class="flow-legend">
+      <span><i class="live"></i>carrying signal</span>
+      <span><i></i>running, nothing to show</span>
+      <span><i class="off"></i>not running — reason in the box</span>
+      <span><i class="evt"></i>event just fired</span>
     </div>
   </section>
 
@@ -853,11 +929,273 @@
     $("tbl-body").innerHTML = rows.join("");
   }
 
+  // ── signal flow (debug) ────────────────────────────────────────────────────
+  /** A live diagram of the pipeline, for the question "why is nothing happening".
+   *
+   *  Every box is a real stage in `Visualizer.process` and every reading comes
+   *  from telemetry the engine already publishes. Nothing here is inferred or
+   *  simulated: a debug view that guesses is worse than no debug view, because
+   *  it is believed.
+   *
+   *  Three states, not two. `off` means a stage is not running at all and says
+   *  why -- mono source, no separator, single strip. `idle` means it is running
+   *  and has nothing to show this instant. Collapsing those two is exactly the
+   *  confusion this panel exists to remove: "the stems box is dark" and "the
+   *  stems box is disabled" are different bugs with different fixes.
+   */
+  const NODE_W = 168, NODE_H = 54, COL = 196, ROW = 70, PAD = 10;
+
+  /** The slow layer gets its own band rather than a long edge across the fast
+   *  one, because that is what it physically is: Scene and Stems read the audio
+   *  directly on their own threads and rejoin at the director, seconds late.
+   *  Drawing them inline would imply a per-frame dependency that does not
+   *  exist -- and that misreading is the whole reason the stem work is
+   *  director-only. `Source` and `Director` therefore appear in two bands. */
+  const FLOW = {
+    a: {
+      nodes: [
+        { id: "source", col: 0, row: 1, name: "Source" },
+        { id: "split", col: 1, row: 1, name: "Mid / side" },
+        { id: "mel", col: 2, row: 1, name: "Filterbank" },
+        { id: "vocal", col: 3, row: 0, name: "Vocal suppress" },
+        { id: "onset", col: 3, row: 1, name: "Onsets / beat" },
+        { id: "hpss", col: 3, row: 2, name: "HPSS" },
+        { id: "director", col: 4, row: 1, name: "Director" },
+      ],
+      edges: [["source", "split"], ["split", "mel"], ["mel", "vocal"], ["mel", "onset"],
+              ["mel", "hpss"], ["vocal", "director"], ["onset", "director"], ["hpss", "director"]],
+    },
+    b: {
+      nodes: [
+        { id: "source2", col: 0, row: 1, name: "Source" },
+        { id: "scene", col: 1, row: 0, name: "Scene · YAMNet" },
+        { id: "stems", col: 1, row: 1, name: "Stems · Demucs" },
+        { id: "image", col: 1, row: 2, name: "Stereo image" },
+        { id: "director2", col: 2, row: 1, name: "Director" },
+      ],
+      edges: [["source2", "scene"], ["source2", "stems"], ["source2", "image"],
+              ["scene", "director2"], ["stems", "director2"], ["image", "director2"]],
+    },
+    c: {
+      nodes: [
+        { id: "effect", col: 0, row: 1, name: "Effect" },
+        { id: "accent", col: 1, row: 0, name: "Accents" },
+        { id: "unison", col: 1, row: 1, name: "Unison" },
+        { id: "uplift", col: 1, row: 2, name: "Track uplift" },
+        { id: "room", col: 2, row: 1, name: "Room / sides" },
+        { id: "out", col: 3, row: 1, name: "Output" },
+      ],
+      edges: [["effect", "accent"], ["effect", "unison"], ["effect", "uplift"],
+              ["accent", "room"], ["unison", "room"], ["uplift", "room"], ["room", "out"]],
+    },
+  };
+  const ALIAS = { source2: "source", director2: "director" };
+
+  const pct = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+  const n2 = (v) => (Number(v) || 0).toFixed(2);
+
+  /** One reading per stage. `meter` is 0-1 and is only drawn when live.
+   *
+   *  `process()` returns early on silence, so on a quiet room everything
+   *  downstream keeps its constructed default -- including `available: false`
+   *  on scene, stems and the stereo image. Reading those flags alone reports
+   *  "no classifier" for a rig whose classifier is loaded and simply has
+   *  nothing to hear, which is the exact misdiagnosis this panel exists to
+   *  prevent. So anything genuinely switched off is decided from *settings*,
+   *  which do not move when the music stops, and silence is reported as
+   *  silence.
+   */
+  const QUIET = "no audio";
+  const STATE = {
+    source: (e) => e.silent
+      ? { state: "idle", detail: `${e.source} · silent` }
+      : { state: "live", detail: `${e.source} · vol ${n2(e.volume)}`, meter: pct(e.volume * 3) },
+    // `stereo` is set from the frame's shape before the silence return, so it
+    // stays true through a quiet passage and is safe to read here.
+    split: (e) => !e.stereo ? { state: "off", detail: "mono source" }
+      : e.silent ? { state: "idle", detail: `stereo · ${QUIET}` }
+      : { state: "live", detail: `stereo · width ${n2(e.image && e.image.width)}`,
+          meter: pct(e.image && e.image.width) },
+    mel: (e) => e.silent
+      ? { state: "idle", detail: `${e.bins} bands · ${QUIET}` }
+      : { state: "live", detail: `${e.bins} bands · energy ${n2(e.energy)}`, meter: pct(e.energy) },
+    vocal: (e) => !e.stereo ? { state: "off", detail: "needs a side channel" }
+      : !e.vocal_suppression ? { state: "off", detail: "suppression at 0" }
+      : e.silent ? { state: "idle", detail: QUIET }
+      : { state: "live", detail: `${n2(e.vocal_suppression)} · dialogue ${n2(e.dialogue)}`,
+          meter: pct(e.dialogue) },
+    onset: (e) => e.silent
+      ? { state: "idle", detail: `${e.beats} beats · ${QUIET}` }
+      : { state: "live", detail: `${e.beats} beats · ${e.beat_period}s apart`, meter: pct(e.onset) },
+    hpss: (e) => e.silent
+      ? { state: "idle", detail: QUIET }
+      : { state: "live", detail: `percussive ${n2(e.percussive)}`, meter: pct(e.percussive) },
+    scene: (e, cfg) => cfg && cfg.mood && !cfg.mood.scene_weight
+      ? { state: "off", detail: "mood.scene_weight is 0" }
+      : e.scene && e.scene.available
+        ? { state: "live", detail: `${e.scene.top || "—"} ${n2(e.scene.top_score)}`,
+            meter: pct(e.scene.top_score) }
+        : e.silent ? { state: "idle", detail: `waiting · ${QUIET}` }
+        : { state: "off", detail: "classifier did not load" },
+    stems: (e, cfg) => cfg && cfg.mood && !cfg.mood.stem_weight
+      ? { state: "off", detail: "mood.stem_weight is 0" }
+      : e.stems && e.stems.available
+        ? { state: "live",
+            detail: `2nd ${e.stems.secondary || "—"} · ${e.stems.inference_ms}ms ${e.stems.device}`,
+            meter: pct(e.stems.secondary_share * 2) }
+        : e.silent ? { state: "idle", detail: `waiting · ${QUIET}` }
+        : { state: "idle", detail: "separator still loading" },
+    // The per-channel transforms are built only when the rig has sides, so a
+    // single strip is a real "off" and says so; anything else is silence.
+    image: (e) => (e.segments || []).length <= 1
+      ? { state: "off", detail: "single strip — no sides" }
+      : !e.stereo ? { state: "off", detail: "mono source" }
+      : e.image && e.image.available
+        ? { state: "live", detail: `Δ ${n2(e.image.difference)} · balance ${n2(e.image.balance)}`,
+            meter: pct(e.image.difference) }
+        : { state: "idle", detail: QUIET },
+    // No director means a fixed effect was chosen, which is a legitimate state
+    // and not a fault -- so it says which one rather than just going dark.
+    director: (e) => !e.director
+      ? { state: "off", detail: `fixed on ${e.effect}` }
+      : { state: e.silent ? "idle" : "live",
+          detail: `${e.director.current} · drift ${n2(e.director.drift)} · held ${Math.round(e.director.held)}s`,
+          meter: pct(e.director.drift * 3) },
+    effect: (e) => ({
+      state: e.silent ? "idle" : "live",
+      detail: e.director && e.director.fade < 1
+        ? `${e.director.current} ← ${e.director.previous} ${n2(e.director.fade)}`
+        : (e.director ? e.director.current : e.effect),
+      meter: 1,
+    }),
+    accent: (e) => (e.segments || []).length > 1
+      ? { state: (e.accent || []).some((v) => v > 0.01) ? "live" : "idle",
+          detail: `${e.accents} fired`, meter: pct(Math.max(0, ...(e.accent || [0]))) }
+      : { state: "off", detail: "side walls only" },
+    unison: (e) => ({ state: e.unison > 0.05 ? "live" : "idle",
+                      detail: `${n2(e.unison)} · ${e.unisons} fired`, meter: pct(e.unison) }),
+    uplift: (e) => ({ state: e.surge_db > 0 ? "live" : "idle",
+                      detail: `${e.tracks} tracks · ${e.surge_db} dB · full ${n2(e.fullness)}`,
+                      meter: pct(e.fullness) }),
+    room: (e, cfg) => (e.segments || []).length > 1
+      ? { state: "live",
+          detail: `${(cfg && cfg.output && cfg.output.side_mode) || "?"} · ${e.segments.join(" · ")} px`,
+          meter: 1 }
+      : { state: "off", detail: "single strip" },
+    // Packets keep flowing through a silent passage -- they are simply black,
+    // which is a different thing from the output having stopped.
+    out: (e) => ({ state: "live", detail: `${e.pixels} px · ${e.fps} fps`, meter: 1 }),
+  };
+
+  /** Counters only ever climb, so a rise is an event that fired since the last
+   *  frame. Reading the counter rather than a flag means an event is never
+   *  missed between stream ticks, only coalesced. */
+  const counters = {};
+  function bump(name, value) {
+    const prev = counters[name];
+    counters[name] = value;
+    return prev !== undefined && value > prev;
+  }
+
+  function nodeAt(n) { return { x: PAD + n.col * COL, y: PAD + n.row * ROW }; }
+
+  function edgePath(a, b) {
+    const p = nodeAt(a), q = nodeAt(b);
+    const x1 = p.x + NODE_W, y1 = p.y + NODE_H / 2, x2 = q.x, y2 = q.y + NODE_H / 2;
+    const mid = (x1 + x2) / 2;
+    return `M${x1} ${y1} H${mid} V${y2} H${x2}`;
+  }
+
+  function buildFlow() {
+    for (const [band, spec] of Object.entries(FLOW)) {
+      const svg = $("flow-" + band);
+      if (svg.dataset.built) continue;
+      svg.dataset.built = "1";
+      const byId = Object.fromEntries(spec.nodes.map((n) => [n.id, n]));
+      // Edges first: the boxes are opaque and must paint over the lines that
+      // run behind them.
+      const edges = spec.edges.map(([a, b]) =>
+        `<path class="fedge" data-edge="${a}>${b}" d="${edgePath(byId[a], byId[b])}"></path>`).join("");
+      const nodes = spec.nodes.map((n) => {
+        const { x, y } = nodeAt(n);
+        return `<g class="fnode" data-node="${n.id}" data-state="off" transform="translate(${x},${y})">` +
+          `<rect class="box" width="${NODE_W}" height="${NODE_H}"></rect>` +
+          `<text class="name" x="11" y="20">${n.name}</text>` +
+          `<text class="detail" x="11" y="35">—</text>` +
+          `<rect class="meter-bg" x="11" y="${NODE_H - 13}" width="${NODE_W - 22}" height="4"></rect>` +
+          `<rect class="meter" x="11" y="${NODE_H - 13}" width="0" height="4"></rect></g>`;
+      }).join("");
+      svg.innerHTML = edges + nodes;
+    }
+  }
+
+  function firePulse(g) {
+    g.classList.remove("pulse");
+    void g.getBoundingClientRect();          // force a reflow so the animation restarts
+    g.classList.add("pulse");
+    clearTimeout(g._pulse);
+    g._pulse = setTimeout(() => g.classList.remove("pulse"), 450);
+  }
+
+  function updateFlow() {
+    const card = $("card-flow");
+    const on = $("debug").getAttribute("aria-pressed") === "true";
+    card.hidden = !on || !engine;
+    if (card.hidden) return;
+    buildFlow();
+    const e = engine, cfg = settingsCache;
+    // Events, resolved once per frame: a stage drawn in two bands must pulse in
+    // both, and a per-node bump() would let the first read swallow the rise.
+    const pulses = {
+      onset: !!e.beat,
+      director: !!(e.director && bump("switches", e.director.switches)),
+      accent: bump("accents", e.accents),
+      unison: bump("unisons", e.unisons),
+      stems: !!(e.stems && e.stems.available && e.stems.change > 0.15),
+    };
+    $("flow-note").textContent = `${e.frames.toLocaleString()} frames · ${e.fps} fps`;
+    for (const spec of Object.values(FLOW)) {
+      const live = {};
+      for (const n of spec.nodes) {
+        const key = ALIAS[n.id] || n.id;
+        const st = STATE[key](e, cfg);
+        live[n.id] = st.state === "live";
+        const g = document.querySelector(`[data-node="${n.id}"]`);
+        g.dataset.state = st.state;
+        g.querySelector("text.detail").textContent = st.detail;
+        g.querySelector("rect.meter").setAttribute(
+          "width", String(Math.round((NODE_W - 22) * (st.state === "live" ? pct(st.meter) : 0))));
+        if (pulses[key]) firePulse(g);
+      }
+      // An edge is lit only when both ends are, so a dark run of boxes reads as
+      // one broken path rather than as several unrelated dark boxes.
+      for (const [a, b] of spec.edges) {
+        document.querySelector(`[data-edge="${a}>${b}"]`)
+          .setAttribute("data-on", String(!!(live[a] && live[b])));
+      }
+    }
+  }
+
+  // Off unless asked for. This is a debugging view: sixteen boxes repainting at
+  // 60 fps has no business running for someone who is just watching the strip.
+  $("debug").addEventListener("click", () => {
+    const on = $("debug").getAttribute("aria-pressed") !== "true";
+    $("debug").setAttribute("aria-pressed", String(on));
+    try { localStorage.setItem("ambviz-flow", on ? "1" : "0"); } catch {}
+    updateFlow();
+  });
+  (() => {
+    let on = new URLSearchParams(location.search).get("debug") === "1";
+    try { on = on || localStorage.getItem("ambviz-flow") === "1"; } catch {}
+    $("debug").setAttribute("aria-pressed", String(on));
+  })();
+
   // ── render ─────────────────────────────────────────────────────────────────
   let hover = null;
   function render() {
     drawWall(); drawStrip(); drawPlot(hover); drawTable(); drawSpectrum(null);
     if (engine) syncControls(settingsCache) || syncFromEngine();
+    updateFlow();
     // With separate runs the old 0 / mid / last scale names pixels nobody has:
     // there is no pixel 119 on a rig of three strips, there is a pixel 29 on
     // the right one. Report the shape instead.
