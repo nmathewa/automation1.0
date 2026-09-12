@@ -86,19 +86,37 @@ class _SoundDeviceMic(Source):
         self.overflows = 0
 
     def _open(self, sd, device: int | None) -> tuple[object, int]:
-        for channels in _wanted_channels(_max_input_channels(sd, device)):
-            try:
-                return sd.InputStream(
-                    samplerate=self.settings.audio.rate,
-                    channels=channels,
-                    dtype="int16",
-                    blocksize=self.frame_size,
-                    device=device,
-                ), channels
-            except Exception:
-                if channels == 1:
-                    raise
-        raise RuntimeError("unreachable: the mono attempt always raises or returns")
+        # Ask for one frame of buffering. Left unset, PortAudio uses its *high*
+        # latency setting, and a blocking read hands back one device buffer at a
+        # time -- so the run loop iterates once per delivery, not once per
+        # frame, and the device's buffer size becomes the frame rate. A 100 ms
+        # buffer caps the entire visualizer at 10 fps while the drain in
+        # frames() discards the five sixths of the audio it did not analyse.
+        # Measured 59.0 fps on Linux (parec, which has always pinned the
+        # equivalent with --latency-msec=20) against ~10 fps on macOS capturing
+        # BlackHole, where this path *is* the loopback path.
+        #
+        # Hinted, then retried: PortAudio normally clamps a latency it cannot
+        # meet rather than refusing, but a device that does refuse must still
+        # start -- the same reason the channel count falls back below.
+        wanted = _wanted_channels(_max_input_channels(sd, device))
+        failure: Exception | None = None
+        for latency in (self.frame_size / self.settings.audio.rate, "low", None):
+            for channels in wanted:
+                try:
+                    return sd.InputStream(
+                        samplerate=self.settings.audio.rate,
+                        channels=channels,
+                        dtype="int16",
+                        blocksize=self.frame_size,
+                        device=device,
+                        **({} if latency is None else {"latency": latency}),
+                    ), channels
+                except Exception as exc:
+                    failure = exc
+        raise failure if failure is not None else RuntimeError(
+            f"could not open input device {device!r}"
+        )
 
     def frames(self) -> Iterator[np.ndarray]:
         while True:
@@ -129,6 +147,9 @@ class _PyAudioMic(Source):
         self._stream, self.channels = self._open(pyaudio, device)
         self.overflows = 0
 
+    # No latency hint here because pyaudio has no equivalent: frames_per_buffer
+    # *is* the buffer, so this backend already asks for one frame of it and
+    # cannot inherit the oversized default that throttles the sounddevice path.
     def _open(self, pyaudio, device: int | None) -> tuple[object, int]:
         for channels in _wanted_channels(_pyaudio_input_channels(self._pa, device)):
             try:

@@ -176,9 +176,18 @@ def cmd_run(args: argparse.Namespace) -> int:
                 frames += 1
                 now = time.monotonic()
                 if not args.quiet and now - last_report >= 1.0:
+                    # Overflows are how a capture buffer too large for the frame
+                    # loop announces itself: audio arrives in bursts, the
+                    # backlog is dropped, the rate falls, and nothing fails.
+                    # Counted since this backend was written and published
+                    # nowhere, which is why a slow Mac took a measurement to
+                    # explain rather than a glance at the telemetry.
+                    dropped = getattr(source, "overflows", 0)
                     print(f"\r{frames / (now - started):5.1f} fps  "
                           f"vol {visualizer.volume:7.4f}  "
-                          f"{'silent' if visualizer.silent else 'active'}   ",
+                          f"{'silent' if visualizer.silent else 'active'}"
+                          + (f"  overflow {dropped}" if dropped else "")
+                          + "   ",
                           end="", file=sys.stderr, flush=True)
                     last_report = now
                 if args.duration and now - started >= args.duration:
@@ -193,9 +202,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 service.stop()
         elapsed = time.monotonic() - started
         if not args.quiet:
+            dropped = getattr(source, "overflows", 0)
             print(f"\n{frames} frames in {elapsed:.1f}s "
                   f"({frames / max(elapsed, 1e-9):.1f} fps), "
-                  f"{output.packets} packets / {output.bytes} bytes", file=sys.stderr)
+                  f"{output.packets} packets / {output.bytes} bytes"
+                  + (f", {dropped} capture overflows" if dropped else ""),
+                  file=sys.stderr)
     return 0
 
 
