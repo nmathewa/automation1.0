@@ -44,12 +44,14 @@ class _FakeSD:
         self.reported = reported
         self.refuses = refuses
         self.attempts: list[int] = []
+        self.latencies: list[object] = []
 
     def query_devices(self, device=None, kind=None):
         return {"max_input_channels": self.reported, "name": "fake"}
 
     def InputStream(self, *, channels, blocksize, **kw):  # noqa: N802 - sd's name
         self.attempts.append(channels)
+        self.latencies.append(kw.get("latency"))
         if self.refuses and channels > 1:
             raise RuntimeError("device cannot open 2 channels at this rate")
         return _FakeStream(channels, blocksize)
@@ -109,6 +111,31 @@ def test_a_real_failure_is_not_swallowed(monkeypatch):
 def test_never_asks_for_more_than_two(reported, expected):
     """An 8-in interface is not eight walls; the pipeline reads mid and side."""
     assert sources._wanted_channels(reported) == expected
+
+
+def test_asks_for_one_frame_of_buffering(monkeypatch):
+    """Unset, PortAudio uses its high-latency default and a blocking read
+    returns one device buffer per iteration -- so the buffer sets the frame
+    rate, not the CPU. 100 ms of it is 10 fps however fast the machine is."""
+    sd = _FakeSD(reported=2)
+    mic = _mic(monkeypatch, sd)
+    assert sd.latencies[0] == pytest.approx(mic.frame_size / Settings().audio.rate)
+
+
+def test_falls_back_when_the_device_refuses_the_latency_hint(monkeypatch):
+    """The hint is an optimisation; not starting at all is a regression."""
+    class _Fussy(_FakeSD):
+        def InputStream(self, *, channels, blocksize, **kw):  # noqa: N802 - sd's name
+            self.attempts.append(channels)
+            self.latencies.append(kw.get("latency"))
+            if not isinstance(kw.get("latency"), str):
+                raise RuntimeError("unsupported latency")
+            return _FakeStream(channels, blocksize)
+
+    sd = _Fussy(reported=2)
+    mic = _mic(monkeypatch, sd)
+    assert mic.channels == 2, "a refused hint must not cost the stereo image"
+    assert sd.latencies[-1] == "low"
 
 
 def test_stereo_frames_reach_the_pipeline_as_stereo(monkeypatch):
