@@ -50,6 +50,20 @@ class Source:
     def frames(self) -> Iterator[np.ndarray]:
         raise NotImplementedError
 
+    @property
+    def sync_device(self) -> str:
+        """The device whose latency the lights should be held back for.
+
+        Empty for a generated or file source, which has no latency to meet.
+        A microphone reports its configured input name, so a virtual input
+        standing in for loopback -- BlackHole on macOS -- can be given a delay
+        in ``output.device_delays`` like any output.
+        """
+        if self.settings.audio.source == "mic":
+            device = self.settings.audio.input_device
+            return device if isinstance(device, str) else ""
+        return ""
+
     def close(self) -> None:
         pass
 
@@ -321,6 +335,12 @@ class LoopbackSource(Source):
         self.device = resolve_monitor(wanted)
         self.reconnects = 0
         self._proc = self._spawn()
+
+    @property
+    def sync_device(self) -> str:
+        """The sink being captured -- and re-read after following a change of
+        default output, so the delay follows the device being listened to."""
+        return self.device.removesuffix(".monitor")
 
     def _spawn(self) -> subprocess.Popen:
         return subprocess.Popen(

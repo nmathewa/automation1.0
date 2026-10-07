@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
+#: Longest a frame may be held back. A second is past any real output
+#: latency; anything longer is a typo, and would hold a second of frames.
+MAX_DELAY_MS = 1000.0
+
 DATA = HERE / "data"
 
 CONTRACT = 2
@@ -374,6 +378,36 @@ class Output:
     so a dropped packet leaves a pixel stale until it next changes; this bounds
     how long that can last. 0 disables."""
 
+    delay_ms: float = 0.0
+    """Milliseconds to hold every frame back, on any device.
+
+    For latency that belongs to the rig rather than to the output device -- a
+    slow network to the ESP, say. Added to whatever ``device_delays`` or
+    ``bluetooth_delay_ms`` gives for the device in use."""
+
+    device_delays: dict[str, float] = field(default_factory=dict)
+    """Milliseconds to hold the lights back, per audio device.
+
+    Keyed by the device the audio passes through -- the output sink for
+    ``loopback``, the input name for ``mic`` -- exactly or by shell pattern::
+
+        [output.device_delays]
+        "bluez_output.B8_84_11_62_FE_51.1" = 180
+        "alsa_output.usb-*" = 0
+
+    Loopback capture taps the audio *before* it reaches the speaker, so a slow
+    output -- Bluetooth above all -- plays it well after the lights have
+    already reacted. A calibrated entry here always wins. Looked up again
+    whenever loopback follows the default output to a new device, so
+    switching from headphones to a speaker switches the delay with it."""
+
+    bluetooth_delay_ms: float = 200.0
+    """Delay for a Bluetooth output with no ``device_delays`` entry.
+
+    The sound server reports 0 latency for Bluetooth sinks, so the real figure
+    cannot be read; A2DP with the SBC codec is typically 150-250 ms. A starting
+    point to calibrate from, not a measurement."""
+
     def gamma_table_path(self) -> Path:
         """Resolve the gamma table, falling back to the one shipped in the package."""
         p = Path(self.gamma_table).expanduser()
@@ -516,6 +550,37 @@ class Dsp:
     Restricting it matters: the kick and bass are centre-panned too, so
     cancelling everywhere would remove exactly what drives the low bands.
     Outside this range the mid channel is used untouched."""
+
+    beat_source: str = "auto"
+    """Which detector fires ``beat``: ``auto``, ``grid``, ``kick``, ``snare``,
+    ``mix`` or ``legacy``.
+
+    ``auto`` follows the kick while the kick keeps landing on the tempo grid,
+    and the full-band ``mix`` detector otherwise -- kick-band energy is often
+    the bass line, not a drum. ``grid`` fires exactly on the tempo tracker's
+    predicted beats -- one flash per beat, never on an off-beat -- and falls
+    back to ``mix`` until it has locked. ``legacy`` is the original detector: a
+    jump in the summed Mel levels, 200 Hz and up."""
+
+    kick_band: tuple[float, float] = (40.0, 150.0)
+    """Where the kick detector listens, in Hz. Below the Mel bank's floor on
+    purpose: a kick's energy is almost all under 150 Hz."""
+
+    snare_band: tuple[float, float] = (200.0, 6000.0)
+    """Where the snare detector listens, in Hz -- on the *percussive* part of
+    the spectrum only, which is what keeps a sung note out of it."""
+
+    hat_band: tuple[float, float] = (7000.0, 16000.0)
+    """Where the hi-hat and cymbal detector listens, in Hz, percussive part
+    only. Capped at Nyquist."""
+
+    drum_sensitivity: float = 2.5
+    """How many mean deviations above its recent average a band's flux must
+    rise to count as a hit. Lower fires more.
+
+    Tuned on 120 s of a 104 BPM pop recording against librosa's onsets: 2.0
+    landed 89% of hits on a real onset, 2.5 landed 91% and caught 68%, 3.0
+    landed 92% but caught only 59%."""
 
 
 @dataclass
@@ -898,6 +963,21 @@ class Settings:
                 problems.append("output.side_animation must not be 'auto'")
         if not 0.0 < self.output.side_brightness <= 1.0:
             problems.append("output.side_brightness must be above 0 and at most 1.0")
+        if not 0.0 <= self.output.delay_ms <= MAX_DELAY_MS:
+            problems.append(f"output.delay_ms must be between 0 and {MAX_DELAY_MS:.0f}")
+        if not 0.0 <= self.output.bluetooth_delay_ms <= MAX_DELAY_MS:
+            problems.append(
+                f"output.bluetooth_delay_ms must be between 0 and {MAX_DELAY_MS:.0f}")
+        if not isinstance(self.output.device_delays, dict):
+            problems.append("output.device_delays must be a table of device = milliseconds")
+        else:
+            for name, ms in self.output.device_delays.items():
+                if (not isinstance(name, str) or not name
+                        or isinstance(ms, bool) or not isinstance(ms, (int, float))
+                        or not 0.0 <= ms <= MAX_DELAY_MS):
+                    problems.append(
+                        f"output.device_delays[{name!r}] must be a number of milliseconds "
+                        f"between 0 and {MAX_DELAY_MS:.0f}")
         if self.output.track_gap < 0:
             problems.append("output.track_gap must not be negative")
         if self.output.uplift_warmup < 0:
@@ -1060,6 +1140,17 @@ class Settings:
         if low < 0:
             problems.append("dsp.vocal_band lower edge must not be negative")
 
+        if self.dsp.beat_source not in ("auto", "grid", "kick", "snare", "mix", "legacy"):
+            problems.append(
+                "dsp.beat_source must be one of auto, grid, kick, snare, mix, legacy; "
+                f"got {self.dsp.beat_source!r}")
+        for name in ("kick_band", "snare_band", "hat_band"):
+            band = getattr(self.dsp, name)
+            if len(band) != 2 or not 0.0 <= band[0] < band[1]:
+                problems.append(f"dsp.{name} must be (low, high) Hz with 0 <= low < high")
+        if self.dsp.drum_sensitivity <= 0.0:
+            problems.append("dsp.drum_sensitivity must be positive")
+
         if self.dsp.onset_sensitivity <= 1.0:
             problems.append("dsp.onset_sensitivity must be greater than 1.0")
         if self.dsp.onset_refractory < 0:
@@ -1122,6 +1213,9 @@ class Settings:
 
 
 def _toml_value(v: Any) -> str:
+    if isinstance(v, dict):
+        return "{" + ", ".join(f"{json.dumps(str(k))} = {_toml_value(x)}"
+                               for k, x in v.items()) + "}"
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, str):

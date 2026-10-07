@@ -227,6 +227,7 @@ class HarmonicPercussive:
         self._mid = self.frames // 2
         self._buf = np.zeros((self.frames, int(bins)), dtype=np.float32)
         self._primed = False
+        self.percussive_spectrum = np.zeros(int(bins), dtype=np.float32)
 
     def update(self, spectrum: np.ndarray) -> tuple[float, float]:
         """Return ``(harmonic, percussive)`` energy for this frame.
@@ -261,6 +262,9 @@ class HarmonicPercussive:
         h = harmonic ** self.power
         p = percussive ** self.power
         mask = p / (p + h + EPS)
+        # Kept for the instrument detectors: a held vocal note is harmonic, so
+        # a snare or hat found in this spectrum cannot be a sung syllable.
+        self.percussive_spectrum = s * mask
         return float(np.sum(s * (1.0 - mask))), float(np.sum(s * mask))
 
     @staticmethod

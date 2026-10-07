@@ -13,15 +13,31 @@ from ambviz.dsp import (EPS, AdaptiveRange, ExpFilter, HarmonicPercussive,
 from ambviz.effects import EFFECTS, hsv_to_rgb, rescale_clocks
 from dataclasses import replace
 
-from ambviz.features import Features, OnsetDetector, StereoImage
+from ambviz.features import (BandOnsetDetector, Drums, Features, OnsetDetector,
+                             StereoImage, Tempo, TempoTracker)
 from ambviz.scene import Scene, try_create
 from ambviz.stems import HUES, Stems, try_create as try_create_stems
 from ambviz.settings import Settings
+from ambviz.sync import Sync
 
 # Which settings force which object to be rebuilt when changed at runtime.
 _REBUILDS_MEL_BANK = {"dsp.min_frequency", "dsp.max_frequency", "dsp.fft_bins"}
 _REBUILDS_MEL_FILTERS = {"dsp.fft_bins", "smoothing.mel_gain", "smoothing.mel_smoothing"}
 _REBUILDS_HPSS = {"dsp.hpss_frames", "dsp.hpss_kernel"}
+_REBUILDS_DRUMS = {"dsp.kick_band", "dsp.snare_band", "dsp.hat_band", "dsp.drum_sensitivity"}
+
+#: How reliably the kick must sit on the tempo grid before it alone drives the
+#: beat. Kick-band energy is not always a kick: in a mix where the bass line
+#: moves, most of it is bass notes. Measured on a 30 s pop recording, 38% of
+#: kick-band hits landed on a real onset, against 73% for the full-band
+#: detector -- so the kick has to earn the lead rather than be given it.
+KICK_LEAD = 0.6
+
+#: A hit further than this fraction of a beat from the grid is taken to be a
+#: syllable or a fill rather than the pulse.
+OFF_GRID = 0.15
+
+BEAT_SOURCES = ("auto", "grid", "kick", "snare", "mix", "legacy")
 _REBUILDS_EFFECT = {
     "effect.name", "effect.mirror", "dsp.fft_bins",
     "smoothing.red", "smoothing.green", "smoothing.blue",
@@ -130,6 +146,7 @@ class Visualizer:
         # beats instead of seconds. Seeded at a 120 BPM half-note, which is
         # what it converges to on most material anyway.
         self.beat_period = 0.5
+        self._gap_period = 0.5
         self._last_beat_t: float | None = None
         self._roll_lr = (np.zeros((2, *self._roll.shape)) if self._sided else None)
         self.image = StereoImage()
@@ -206,6 +223,12 @@ class Visualizer:
             sensitivity=settings.dsp.onset_sensitivity,
             refractory=settings.dsp.onset_refractory,
         )
+        self._reset_rhythm()
+        self.drums = Drums()
+        self.beat_driver = "mix"
+        # Set by the run loop, which owns the output; published so a client can
+        # show and calibrate it.
+        self.sync = Sync(device="", delay_ms=0.0, basis="none")
         self.features = Features(mel=np.zeros(bins), volume=0.0, silent=True)
         # Static per process, so computed once: it lets a client build its
         # effect list from the state stream instead of a second request.
@@ -237,6 +260,8 @@ class Visualizer:
 
         if touched & {"dsp.vocal_band"}:
             self._band_mask = None
+        if touched & _REBUILDS_DRUMS:
+            self._build_drums()
         if touched & _REBUILDS_MEL_BANK:
             self.mel_bank.rebuild()
         if touched & _REBUILDS_MEL_FILTERS:
@@ -290,6 +315,86 @@ class Visualizer:
             for _ in range(2)]
         self._side_mel = ExpFilter(np.tile(1e-2, bins),
                                    alpha_decay=a_ch * 2, alpha_rise=a_ch * 4)
+
+    def _build_drums(self) -> None:
+        d, fps = self.settings.dsp, float(self.settings.audio.fps)
+        sens = d.drum_sensitivity
+        # Kicks are rarely closer than an eighth note at 190 BPM; hats can run
+        # at sixteenths, so their refractory is shorter.
+        self.kick = BandOnsetDetector(*d.kick_band, sensitivity=sens, refractory=0.15, fps=fps)
+        self.snare = BandOnsetDetector(*d.snare_band, sensitivity=sens, refractory=0.12, fps=fps)
+        self.hat = BandOnsetDetector(*d.hat_band, sensitivity=sens, refractory=0.07,
+                                     decay=0.08, fps=fps)
+        # The whole audible range, judged the same way as the instruments. Not
+        # the Mel-based OnsetDetector: that one sums a difference of levels, so
+        # whichever band is loudest decides, where this takes a ratio per bin.
+        self.hits = BandOnsetDetector(30.0, 16000.0, sensitivity=sens, refractory=0.12, fps=fps)
+        # How often recent kicks have landed on the grid, 0-1.
+        self._kick_on_grid = ExpFilter(0.0, alpha_decay=0.15, alpha_rise=0.15)
+
+    def _reset_rhythm(self) -> None:
+        self._build_drums()
+        self.tempo_tracker = TempoTracker(fps=float(self.settings.audio.fps))
+        self.tempo = Tempo()
+        self._gap_period = 0.5
+        self._last_beat_t = None
+
+    def _detect_beat(self, spectrum: np.ndarray, mix_onset: float, mix_beat: bool,
+                     t: float) -> tuple[float, bool]:
+        """Run the instrument detectors and the tempo grid; return ``(onset, beat)``.
+
+        ``auto`` lets the kick lead only while it keeps landing on the grid,
+        because that is the hit people feel -- and otherwise uses the
+        full-band detector, which is right far more often than kick-band
+        energy that may well be the bass.
+        """
+        rate = float(self.settings.audio.rate)
+        kick = self.kick.update(spectrum, rate, t)
+        perc = self.hpss.percussive_spectrum
+        snare = self.snare.update(perc, rate, t)
+        hat = self.hat.update(perc, rate, t)
+        hits = self.hits.update(spectrum, rate, t)
+        self.drums = Drums(kick=kick, snare=snare, hat=hat)
+        self.tempo = self.tempo_tracker.update(hits.flux, t, hit=hits.hit)
+        locked = self.tempo.locked
+        if kick.hit and locked:
+            near = self.tempo_tracker.distance(t) <= OFF_GRID * self.tempo.period
+            self._kick_on_grid.update(1.0 if near else 0.0)
+
+        source = self.settings.dsp.beat_source
+        if source == "auto":
+            source = ("kick" if locked and self._kick_on_grid.value >= KICK_LEAD
+                      else "mix")
+        self.beat_driver = source
+        if source == "legacy":
+            onset, beat = mix_onset, mix_beat
+        elif source == "grid":
+            # The predicted beat itself, with the full-band hit's strength when
+            # one coincides. Falls back to the hits until there is a grid.
+            if locked:
+                beat = self.tempo.pulse
+                onset = max(hits.strength, 1.0 - self.tempo.phase / 0.25) if beat or \
+                    self.tempo.phase < 0.25 else 0.0
+                onset = float(np.clip(onset, 0.0, 1.0))
+            else:
+                onset, beat = hits.strength, hits.hit
+        else:
+            chosen = {"kick": kick, "snare": snare, "mix": hits}[source]
+            onset, beat = chosen.strength, chosen.hit
+
+        if beat:
+            self.beats += 1
+            if self._last_beat_t is not None:
+                gap = t - self._last_beat_t
+                # Ignore the extremes: a double-triggered hit and a gap across
+                # a silence say nothing about the tempo.
+                if 0.08 <= gap <= 2.0:
+                    self._gap_period += 0.12 * (gap - self._gap_period)
+            self._last_beat_t = t
+        # The grid's period once it has one; the gap average is only a fallback
+        # for music too loose to lock to.
+        self.beat_period = self.tempo.period if locked else self._gap_period
+        return onset, beat
 
     def _build_effect(self) -> None:
         # Sized from the *front*, not the whole chain.
@@ -357,6 +462,11 @@ class Visualizer:
             "beat": self.features.beat,
             "beats": self.beats,
             "flux": round(float(self.features.flux), 4),
+            "drums": self.drums.to_dict(),
+            "tempo": self.tempo.to_dict(),
+            "beat_source": s.dsp.beat_source,
+            "beat_driver": self.beat_driver,
+            "sync": self.sync.to_dict(),
             "mel_gain": round(float(np.max(mel_gain)), 6),
             "center_frequencies": [round(float(f), 1) for f in self.mel_bank.center_frequencies],
             "min_frequency": s.dsp.min_frequency,
@@ -460,16 +570,11 @@ class Visualizer:
         mel = mel / np.maximum(self.mel_gain.value, EPS)
         self.mel = self.mel_smoothing.update(mel)
 
-        onset, beat, flux = self.onsets.update(self.mel, elapsed)
-        if beat:
-            self.beats += 1
-            if self._last_beat_t is not None:
-                gap = elapsed - self._last_beat_t
-                # Ignore the extremes: a double-triggered hit and a gap across
-                # a silence say nothing about the tempo.
-                if 0.08 <= gap <= 2.0:
-                    self.beat_period += 0.12 * (gap - self.beat_period)
-            self._last_beat_t = elapsed
+        # The original detector, unchanged and still on the smoothed levels:
+        # onset_rate comes from it, and the director and the room uplift are
+        # tuned against that density. What fires ``beat`` is _detect_beat's
+        # business, which works from the raw spectrum.
+        mix_onset, mix_beat, flux = self.onsets.update(self.mel, elapsed)
 
         # HPSS on the *linear* spectrum, not the mel one. A mel band is already
         # a weighted average over many FFT bins, which smears the narrow ridge a
@@ -479,6 +584,8 @@ class Visualizer:
         harmonic, percussive = self.hpss.update(spectrum)
         percussive_now = HarmonicPercussive.ratio(harmonic, percussive)
         percussive_rate = float(self.percussive.update(percussive_now))
+
+        onset, beat = self._detect_beat(spectrum, mix_onset, mix_beat, elapsed)
 
         # Hue follows the arrangement rather than the vocal line.
         centroid_hz = self._centroid(self._normalise(mel_tonal))
@@ -504,7 +611,7 @@ class Visualizer:
         # director scores on: AdaptiveRange rescales whatever it is fed to fill
         # 0-1, measured at 2.4x on real audio, and candidates are compared
         # against each other so they need a scale that does not move.
-        rate_raw = float(self.onset_rate.update(1.0 if beat else 0.0))
+        rate_raw = float(self.onset_rate.update(1.0 if mix_beat else 0.0))
         rate_norm = self.onset_range.update(rate_raw)
         # Fixed full scale, not an adaptive one. The envelope saturates near
         # 0.5 on continuously percussive material (measured max 0.505 over 43 s
@@ -550,6 +657,7 @@ class Visualizer:
             spread=spread, energy=energy, scene=scene,
             onset_rate=rate_abs, brightness=float(1.0 - narrow),
             percussive=percussive_rate, stems=self.stems, image=self.image,
+            drums=self.drums, tempo=self.tempo,
         )
         return self._to_strip(self.effect.render(self.features))
 
@@ -972,6 +1080,11 @@ class Visualizer:
             return
         self.tracks += 1
         self.track_started = t
+        # The tempo, the detectors' sense of normal and whether the kick can be
+        # trusted all belonged to the last song too. Until the grid relocks --
+        # a few seconds -- ``auto`` and ``grid`` fall back to the full-band
+        # hits, which need no history.
+        self._reset_rhythm()
         # Everything the surge is judged against belonged to the last song.
         self._db_primed = False
         self._db_floor = -90.0

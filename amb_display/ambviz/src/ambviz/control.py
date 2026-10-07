@@ -47,6 +47,11 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "dsp.percussive_smoothing",
     "dsp.vocal_suppression",
     "dsp.vocal_band",
+    "dsp.beat_source",
+    "dsp.kick_band",
+    "dsp.snare_band",
+    "dsp.hat_band",
+    "dsp.drum_sensitivity",
     # the slow layer
     "mood.response_seconds",
     "mood.hue_rate",
@@ -104,6 +109,9 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "output.wash_softness",
     "output.gamma_correction",
     "output.full_refresh_interval",
+    "output.delay_ms",
+    "output.device_delays",
+    "output.bluetooth_delay_ms",
 })
 """Settings a client may change while running.
 
