@@ -7,58 +7,24 @@ on:
   workflow_dispatch:
 
 jobs:
-  firmware:
-    name: Build firmware
+  ambviz:
+    name: ambviz dependency
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Cache PlatformIO
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.platformio
-            ~/.cache/pip
-          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
-          restore-keys: pio-${{ runner.os }}-
-
-      - name: Install PlatformIO
-        run: pip install --upgrade platformio
-
-      - name: Build
-        run: bash build-platformio.sh
-
-  package:
-    name: ambviz tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # The package does not exist on every branch yet, so skip rather than fail.
-      - name: Look for the package
-        id: pkg
-        run: |
-          if [ -f amb_display/ambviz/pyproject.toml ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "amb_display/ambviz not on this branch; nothing to test"
-          fi
-
-      - uses: actions/setup-python@v5
-        if: steps.pkg.outputs.present == 'true'
         with:
           python-version: '3.12'
           cache: pip
 
-      - name: Install
-        if: steps.pkg.outputs.present == 'true'
-        run: pip install -e "amb_display/ambviz[dev]"
+      # The display is a pinned dependency now; prove the pin still resolves
+      # and installs, so a bad tag fails here rather than on the hub.
+      - name: Install requirements
+        run: pip install -r requirements.txt
 
-      - name: Test
-        if: steps.pkg.outputs.present == 'true'
-        run: python -m pytest amb_display/ambviz/tests -q
+      - name: Check
+        run: ambviz --version
+
+      # No firmware in this repository builds yet (see build-platformio.sh);
+      # add a PlatformIO job back when gate_way_node or single_node does.

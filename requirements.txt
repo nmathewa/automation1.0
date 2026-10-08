@@ -1,0 +1,5 @@
+# The ambient display (LED strips, room output, movie mode) lives in its own
+# repository now and is pinned here by release tag:
+#   https://github.com/nmathewa/ambviz
+# Extras: mic (live capture), scene (YAMNet; movie mode uses it).
+ambviz[mic,scene] @ git+https://github.com/nmathewa/ambviz@v0.5.0

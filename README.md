@@ -1,4 +1,23 @@
 # automation1.0
+
+Home automation: weather station outdoor and indoor units, automated switches,
+and a dashboard that brings them together.
+
+## Components
+
+| Part | Where |
+|---|---|
+| Ambient display (audio-reactive LED strips and rooms) | [nmathewa/ambviz](https://github.com/nmathewa/ambviz), pinned in `requirements.txt` |
+| Weather station, indoor unit | `single_node/` |
+| Gateway (radio to network) | `gate_way_node/`, `nrf_debug/` |
+| Weather data analysis | `post_tool/`, `dashboard/weather/` |
+| Automated switches | not started |
+| Combined dashboard | not started; see `Docs/` |
+
+```bash
+pip install -r requirements.txt   # the ambient display, at its pinned release
+```
+
 ## NRF24l01
 
 <img src="https://www.electronicwings.com/public/images/user_images/images/Arduino/nRF24L01/Frequency%20Channel.png" width="200" height="200">

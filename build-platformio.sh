@@ -11,10 +11,11 @@ set -euo pipefail
 # Only projects that actually build are listed. See the notes at the bottom for
 # the ones that do not, and why -- adding one here before fixing it just turns
 # CI red for a known reason, which teaches nobody anything.
-PROJECTS=(
-  "amb_display/pro_led"
-  "amb_display/esp_tests/esp_pro_audio"
-)
+#
+# The LED firmware that used to be listed here moved to
+# https://github.com/nmathewa/ambviz along with the rest of the ambient display;
+# that repository builds it. Nothing in this one builds yet -- see the notes.
+PROJECTS=()
 
 command -v pio >/dev/null 2>&1 || {
   echo "pio not found. Install it with: pip install platformio" >&2
