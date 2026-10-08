@@ -8,6 +8,7 @@ import time
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
+from ambviz.content import Content, ContentDetector
 from ambviz.dsp import (EPS, AdaptiveRange, ExpFilter, HarmonicPercussive,
                         MelBank, interpolate)
 from ambviz.effects import EFFECTS, hsv_to_rgb, rescale_clocks
@@ -180,9 +181,12 @@ class Visualizer:
         self.onset_rate = ExpFilter(0.0, alpha_decay=0.02, alpha_rise=0.15)
         # Optional and best-effort: returns None if the runtime, the model or
         # the network is missing, and everything downstream copes.
+        # Also for ``movie``, whatever scene_weight says: "is the music
+        # dominant?" is the question it answers far better than the DSP can
+        # when a film's score is mixed into the centre alongside the dialogue.
         self.classifier = (
             try_create(settings.audio.rate, interval=settings.mood.scene_interval)
-            if settings.mood.scene_weight > 0.0 else None
+            if self._wants_classifier() else None
         )
         # Same contract as the classifier: optional, best-effort, and the
         # visualizer is unaffected if torch or the weights are missing.
@@ -225,7 +229,12 @@ class Visualizer:
         )
         self._reset_rhythm()
         self.drums = Drums()
+        self.content_detector = ContentDetector(
+            fps=fps, conversation_hold=settings.mood.movie_conversation_hold,
+            prominence_db=settings.mood.movie_prominence_db)
+        self.content = Content()
         self.beat_driver = "mix"
+        self._drum_hit = self._drum_on_grid = False
         # Set by the run loop, which owns the output; published so a client can
         # show and calibrate it.
         self.sync = Sync(device="", delay_ms=0.0, basis="none")
@@ -279,6 +288,12 @@ class Visualizer:
                 retune(tuple(self.settings.mood.animations))
         if "mood.stem_weight" in touched:
             self._ensure_separator()
+        if "mood.movie_conversation_hold" in touched:
+            self.content_detector.conversation_hold = self.settings.mood.movie_conversation_hold
+        if "mood.movie_prominence_db" in touched:
+            self.content_detector.prominence_db = self.settings.mood.movie_prominence_db
+        if touched & {"effect.name", "mood.scene_weight", "mood.movie_classifier"}:
+            self._ensure_classifier()
         if touched & _REBUILDS_HPSS:
             self.hpss = HarmonicPercussive(
                 self.mel_bank.n_fft_bands,
@@ -357,6 +372,9 @@ class Visualizer:
         self.drums = Drums(kick=kick, snare=snare, hat=hat)
         self.tempo = self.tempo_tracker.update(hits.flux, t, hit=hits.hit)
         locked = self.tempo.locked
+        self._drum_hit = kick.hit or snare.hit or hat.hit
+        self._drum_on_grid = (self._drum_hit and locked
+                              and self.tempo_tracker.distance(t) <= OFF_GRID * self.tempo.period)
         if kick.hit and locked:
             near = self.tempo_tracker.distance(t) <= OFF_GRID * self.tempo.period
             self._kick_on_grid.update(1.0 if near else 0.0)
@@ -467,6 +485,7 @@ class Visualizer:
             "beat_source": s.dsp.beat_source,
             "beat_driver": self.beat_driver,
             "sync": self.sync.to_dict(),
+            "content": self.content.to_dict(),
             "mel_gain": round(float(np.max(mel_gain)), 6),
             "center_frequencies": [round(float(f), 1) for f in self.mel_bank.center_frequencies],
             "min_frequency": s.dsp.min_frequency,
@@ -601,6 +620,14 @@ class Visualizer:
         self.image = self._stereo_image(pad, side_spectrum)
         scene = self.classifier.scene if self.classifier is not None else Scene()
         self.stems = self._smooth_stems()
+        self.content = self.content_detector.update(
+            spectrum, side_spectrum, float(self.settings.audio.rate),
+            rhythm=self.tempo.confidence, wave=y[:self.samples_per_frame],
+            hit=self._drum_hit, on_grid=self._drum_on_grid, locked=self.tempo.locked,
+            speech=scene.get("speech") if scene.available else None,
+            music_vote=max(scene.get("music"), scene.get("voice")) if scene.available else None,
+            vocal_share=(self.stems.prominence("vocals")
+                         if self.stems.available and self.settings.mood.stem_weight > 0 else None))
 
         # A fight scene is loud, wide and full of transients; a dialogue scene is
         # none of those. Averaging the three normalised components is enough to
@@ -657,9 +684,31 @@ class Visualizer:
             spread=spread, energy=energy, scene=scene,
             onset_rate=rate_abs, brightness=float(1.0 - narrow),
             percussive=percussive_rate, stems=self.stems, image=self.image,
-            drums=self.drums, tempo=self.tempo,
+            drums=self.drums, tempo=self.tempo, content=self.content,
         )
         return self._to_strip(self.effect.render(self.features))
+
+    def _wants_classifier(self) -> bool:
+        return (self.settings.mood.scene_weight > 0.0
+                or (self.settings.effect.name == "movie"
+                    and self.settings.mood.movie_classifier))
+
+    def _ensure_classifier(self) -> None:
+        """Start the classifier the first time something needs it.
+
+        On its own thread, like the separator: the model may need downloading,
+        and apply() runs on the audio thread. Left running once started.
+        """
+        if self.classifier is not None or not self._wants_classifier():
+            return
+        rate, interval = self.settings.audio.rate, self.settings.mood.scene_interval
+
+        def build() -> None:
+            made = try_create(rate, interval=interval)
+            if made is not None:
+                self.classifier = made
+
+        threading.Thread(target=build, daemon=True, name="ambviz-scene-init").start()
 
     def _ensure_separator(self) -> None:
         """Start the separator the first time a non-zero weight asks for it.
@@ -893,10 +942,18 @@ class Visualizer:
         3. **The front's own analysis.** Nothing else to go on, so run the same
            animation the front is running, sized and paced for a short wall.
         """
-        return self._finish_side(frame, self._ambient_side(frame, n, left), n, left)
+        # ``movie`` during dialogue: the walls become the front's glow, softly
+        # spread, and stop answering events. A wall running its own animation
+        # beside a conversation is exactly the distraction the mode removes.
+        calm = float(getattr(self.effect, "calm", 0.0))
+        out = self._ambient_side(frame, n, left) if calm < 1.0 else None
+        if calm > 0.0:
+            wash = self._wash(frame, n, left)
+            out = wash if out is None else out * (1.0 - calm) + wash * calm
+        return self._finish_side(frame, out, n, left, calm)
 
     def _finish_side(self, frame: np.ndarray, out: np.ndarray,
-                     n: int, left: bool) -> np.ndarray:
+                     n: int, left: bool, calm: float = 0.0) -> np.ndarray:
         """Hold a wall behind the front, then let an event cut through it.
 
         The cap and the accent are opposites and have to be applied in that
@@ -933,7 +990,7 @@ class Visualizer:
             # side_brightness of the front, which leaves the top of the range
             # free for the accent to climb into -- and that the burst is a
             # travelling animation, so it reads as motion rather than as level.
-            mix = cfg.accent_strength * level
+            mix = cfg.accent_strength * level * (1.0 - calm)
             out = out * (1.0 - mix) + burst * mix
 
         # At the song's biggest moments the room stops being a focus and its
@@ -941,7 +998,7 @@ class Visualizer:
         # both the wall's own content and any accent running on it -- during a
         # drop the walls agreeing with the centre is the whole effect, and a
         # burst crossing one of them would only break it up.
-        unison = self._unison_amount()
+        unison = self._unison_amount() * (1.0 - calm)
         if unison > 0.0:
             mirrored = (frame if frame.shape[1] == n
                         else np.stack([interpolate(c, n) for c in frame]))
@@ -1085,6 +1142,7 @@ class Visualizer:
         # a few seconds -- ``auto`` and ``grid`` fall back to the full-band
         # hits, which need no history.
         self._reset_rhythm()
+        self.content_detector.reset()
         # Everything the surge is judged against belonged to the last song.
         self._db_primed = False
         self._db_floor = -90.0

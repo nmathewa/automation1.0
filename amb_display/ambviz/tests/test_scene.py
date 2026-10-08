@@ -34,8 +34,12 @@ def test_groups_are_musical():
     """The taxonomy is deliberately about music, not about the environment."""
     assert "percussion" in GROUPS and "orchestral" in GROUPS
     flat = {n for names in GROUPS.values() for n in names}
-    for unwanted in ("Bird", "Traffic noise, roadway noise", "Speech", "Explosion"):
+    for unwanted in ("Bird", "Traffic noise, roadway noise", "Explosion"):
         assert unwanted not in flat
+    # Speech is the one exception: ``movie`` needs it to tell dialogue from
+    # music, and it lives in its own group so nothing musical picks it up.
+    assert "Speech" in GROUPS["speech"]
+    assert all("Speech" not in names for g, names in GROUPS.items() if g != "speech")
 
 
 def test_disabling_it_costs_nothing():

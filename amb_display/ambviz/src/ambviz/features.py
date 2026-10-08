@@ -218,6 +218,9 @@ class Features:
     ``beat`` is derived from these, but an effect that wants to answer the
     snare differently from the kick can read them directly."""
 
+    content: "Content" = field(default_factory=lambda: _content())
+    """Music, a song, dialogue or quiet -- what ``movie`` switches on. Slow."""
+
     tempo: "Tempo" = field(default_factory=lambda: Tempo())
     """The beat grid: period, phase and a ``pulse`` on each predicted beat."""
 
@@ -585,3 +588,10 @@ class TempoTracker:
             return float("inf")
         after = self._next_beat - t
         return min(abs(after), abs(self.period - after))
+
+
+def _content():
+    # Imported late: content.py imports dsp, which features also imports, and
+    # keeping Features constructible without it avoids a cycle.
+    from ambviz.content import Content
+    return Content()

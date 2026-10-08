@@ -75,6 +75,13 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "Child singing", "Synthetic singing",
         "Rapping", "Humming", "Yodeling", "Whistling",
     ),
+    # Talking rather than singing -- the dialogue ``movie`` keeps the strip
+    # calm for. Not used by the director's scoring.
+    "speech": (
+        "Speech", "Male speech, man speaking", "Female speech, woman speaking",
+        "Child speech, kid speaking", "Conversation", "Narration, monologue",
+        "Babbling", "Whispering", "Shout", "Yell", "Speech synthesizer",
+    ),
     "electronic": (
         "Electronic music", "House music", "Techno", "Dubstep",
         "Drum and bass", "Electronica", "Electronic dance music",
@@ -203,37 +210,43 @@ class SceneClassifier:
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval):
-            with self._lock:
-                window = np.copy(self._buf)
-            if not np.any(window):
-                continue
-            self._interp.set_tensor(self._in["index"], window)
-            self._interp.invoke()
-            scores = self._interp.get_tensor(self._out["index"])[0]
-            best = int(np.argmax(scores))
+            self.classify()
 
-            # Cosine distance from the previous prediction. A steady passage
-            # scores near zero however loud it is; a sudden change of character
-            # spikes, which is what a surprise actually is.
-            novelty = 0.0
-            if self._prev_scores is not None:
-                a, b = scores, self._prev_scores
-                denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-                if denom > 1e-9:
-                    novelty = float(np.clip(1.0 - np.dot(a, b) / denom, 0.0, 1.0))
-            self._prev_scores = scores.copy()
+    def classify(self) -> None:
+        """Classify the buffered window now. The thread calls this on its
+        interval; offline replays call it directly, so a run faster than real
+        time still gets one verdict per interval of *audio*."""
+        with self._lock:
+            window = np.copy(self._buf)
+        if not np.any(window):
+            return
+        self._interp.set_tensor(self._in["index"], window)
+        self._interp.invoke()
+        scores = self._interp.get_tensor(self._out["index"])[0]
+        best = int(np.argmax(scores))
 
-            # Max rather than sum across a group: five quiet music classes should
-            # not out-vote one confident hit.
-            self.scene = Scene(
-                scores={g: float(np.max(scores[idx])) if len(idx) else 0.0
-                        for g, idx in self._groups.items()},
-                top=self.labels[best],
-                top_score=float(scores[best]),
-                novelty=novelty,
-                unusual=float(np.max(scores[self._other])) if len(self._other) else 0.0,
-                available=True,
-            )
+        # Cosine distance from the previous prediction. A steady passage
+        # scores near zero however loud it is; a sudden change of character
+        # spikes, which is what a surprise actually is.
+        novelty = 0.0
+        if self._prev_scores is not None:
+            a, b = scores, self._prev_scores
+            denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+            if denom > 1e-9:
+                novelty = float(np.clip(1.0 - np.dot(a, b) / denom, 0.0, 1.0))
+        self._prev_scores = scores.copy()
+
+        # Max rather than sum across a group: five quiet music classes should
+        # not out-vote one confident hit.
+        self.scene = Scene(
+            scores={g: float(np.max(scores[idx])) if len(idx) else 0.0
+                    for g, idx in self._groups.items()},
+            top=self.labels[best],
+            top_score=float(scores[best]),
+            novelty=novelty,
+            unusual=float(np.max(scores[self._other])) if len(self._other) else 0.0,
+            available=True,
+        )
 
 
 def try_create(rate: int, interval: float = 0.5,

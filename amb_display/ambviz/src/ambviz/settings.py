@@ -28,6 +28,10 @@ HERE = Path(__file__).resolve().parent
 #: latency; anything longer is a typo, and would hold a second of frames.
 MAX_DELAY_MS = 1000.0
 
+#: Effects that choose other effects. Never allowed where a single animation is
+#: expected -- a wall, an accent, a shortlist -- since one would nest itself.
+DIRECTORS = ("auto", "movie")
+
 DATA = HERE / "data"
 
 CONTRACT = 2
@@ -647,6 +651,35 @@ class Mood:
     The model is the better judge of "is this speech", but it works on ~1 s
     windows, so it is blended rather than trusted outright. 0 ignores it."""
 
+    movie_glow: float = 0.1
+    """Brightness of ``movie``'s glow outside music, 0-1; 0 turns the strip off.
+
+    Most of a film is not music, so this is what the strip shows most of the
+    time: dim and still, light behind a screen rather than a display."""
+
+    movie_classifier: bool = True
+    """Let ``movie`` start YAMNet (if installed) to judge music against speech.
+
+    On a film whose score is mixed into the centre with the dialogue, this is
+    what tells them apart; without it ``movie`` falls back to the DSP cues and
+    rarely recognises film music at all. Off for deterministic tests."""
+
+    movie_conversation_hold: float = 6.0
+    """Seconds after anyone speaks that ``movie`` treats as still being a
+    conversation. Within it, music only counts if it is prominent, so quiet
+    score in the gaps between lines leaves the glow alone."""
+
+    movie_prominence_db: float = 10.0
+    """How close, in dB, the quiet moments of the last six seconds must come to
+    the loud ones for music to count during a conversation. Background score
+    under a film's dialogue measured 15.7 dB; songs 11.6 and 2.8. Raise it to
+    let quieter music through, lower it to be stricter."""
+
+    movie_crossfade: float = 2.0
+    """Seconds ``movie`` takes to fade between the glow and the full animation.
+    How quickly music is *recognised* is the content detector's business; this
+    is only how the change looks."""
+
     animations: tuple[str, ...] = ("bars", "energy", "spectrum", "freqwave", "puddles")
     """Which animations "auto" may choose between, in no particular order.
 
@@ -958,9 +991,9 @@ class Settings:
             if self.output.side_animation not in EFFECTS:
                 problems.append(
                     f"unknown output.side_animation {self.output.side_animation!r}; "
-                    f"expected \"\" or one of {sorted(n for n in EFFECTS if n != 'auto')}")
-            elif self.output.side_animation == "auto":
-                problems.append("output.side_animation must not be 'auto'")
+                    f"expected \"\" or one of {sorted(n for n in EFFECTS if n not in DIRECTORS)}")
+            elif self.output.side_animation in DIRECTORS:
+                problems.append(f"output.side_animation must not be {self.output.side_animation!r}")
         if not 0.0 < self.output.side_brightness <= 1.0:
             problems.append("output.side_brightness must be above 0 and at most 1.0")
         if not 0.0 <= self.output.delay_ms <= MAX_DELAY_MS:
@@ -1007,9 +1040,10 @@ class Settings:
                 problems.append(
                     f"unknown output.accent_animation "
                     f"{self.output.accent_animation!r}; expected \"\" or one of "
-                    f"{sorted(n for n in EFFECTS if n != 'auto')}")
-            elif self.output.accent_animation == "auto":
-                problems.append("output.accent_animation must not be 'auto'")
+                    f"{sorted(n for n in EFFECTS if n not in DIRECTORS)}")
+            elif self.output.accent_animation in DIRECTORS:
+                problems.append(
+                    f"output.accent_animation must not be {self.output.accent_animation!r}")
         if not 0.0 <= self.output.accent_strength <= 1.0:
             problems.append("output.accent_strength must be between 0.0 and 1.0")
         if self.output.accent_beats < 0:
@@ -1102,10 +1136,11 @@ class Settings:
         if unknown:
             problems.append(
                 f"mood.animations names unknown effect(s) {unknown}; "
-                f"expected from {sorted(n for n in EFFECTS if n != 'auto')}"
+                f"expected from {sorted(n for n in EFFECTS if n not in DIRECTORS)}"
             )
-        if "auto" in m.animations:
-            problems.append("mood.animations must not contain 'auto'")
+        for name in DIRECTORS:
+            if name in m.animations:
+                problems.append(f"mood.animations must not contain {name!r}")
         if m.switch_dwell < 0 or m.crossfade <= 0:
             problems.append("mood.switch_dwell must not be negative and crossfade must be positive")
         if not 0.0 <= m.switch_margin <= 1.0:
@@ -1140,6 +1175,14 @@ class Settings:
         if low < 0:
             problems.append("dsp.vocal_band lower edge must not be negative")
 
+        if not 0.0 <= self.mood.movie_glow <= 1.0:
+            problems.append("mood.movie_glow must be between 0 and 1")
+        if self.mood.movie_conversation_hold < 0:
+            problems.append("mood.movie_conversation_hold must not be negative")
+        if not 0.0 < self.mood.movie_prominence_db <= 60.0:
+            problems.append("mood.movie_prominence_db must be above 0 and at most 60")
+        if self.mood.movie_crossfade < 0:
+            problems.append("mood.movie_crossfade must not be negative")
         if self.dsp.beat_source not in ("auto", "grid", "kick", "snare", "mix", "legacy"):
             problems.append(
                 "dsp.beat_source must be one of auto, grid, kick, snare, mix, legacy; "
