@@ -70,7 +70,7 @@ void loop() {
     goto waitLoop;
   }
   
-  memset(leds, 0, NUM_LEDS * sizeof(struct CRGB));
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
   // read the transmission data and set LED values
   for (uint8_t i = 0; i < NUM_LEDS; i++) {
     byte r, g, b;    
