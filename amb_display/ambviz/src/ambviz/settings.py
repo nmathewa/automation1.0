@@ -664,16 +664,16 @@ class Mood:
     what tells them apart; without it ``movie`` falls back to the DSP cues and
     rarely recognises film music at all. Off for deterministic tests."""
 
-    movie_conversation_hold: float = 6.0
-    """Seconds after anyone speaks that ``movie`` treats as still being a
-    conversation. Within it, music only counts if it is prominent, so quiet
-    score in the gaps between lines leaves the glow alone."""
+    movie_dialogue_memory: float = 60.0
+    """Seconds ``movie`` remembers how loud the dialogue was after the last
+    line. While it does, music must come within ``movie_prominence_db`` of that
+    level to show -- so quiet score keeps the glow through a conversation and
+    its pauses. A new track (silence of ``output.track_gap``) forgets at once."""
 
-    movie_prominence_db: float = 10.0
-    """How close, in dB, the quiet moments of the last six seconds must come to
-    the loud ones for music to count during a conversation. Background score
-    under a film's dialogue measured 15.7 dB; songs 11.6 and 2.8. Raise it to
-    let quieter music through, lower it to be stricter."""
+    movie_prominence_db: float = 6.0
+    """How close, in dB, music must come to the remembered dialogue level to
+    show in ``movie``. A film's background score measured 12.6 dB under its
+    dialogue. Raise it to let quieter music through, lower it to be stricter."""
 
     movie_crossfade: float = 2.0
     """Seconds ``movie`` takes to fade between the glow and the full animation.
@@ -1177,8 +1177,8 @@ class Settings:
 
         if not 0.0 <= self.mood.movie_glow <= 1.0:
             problems.append("mood.movie_glow must be between 0 and 1")
-        if self.mood.movie_conversation_hold < 0:
-            problems.append("mood.movie_conversation_hold must not be negative")
+        if self.mood.movie_dialogue_memory < 0:
+            problems.append("mood.movie_dialogue_memory must not be negative")
         if not 0.0 < self.mood.movie_prominence_db <= 60.0:
             problems.append("mood.movie_prominence_db must be above 0 and at most 60")
         if self.mood.movie_crossfade < 0:

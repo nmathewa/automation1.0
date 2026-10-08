@@ -1418,7 +1418,7 @@
       // director's numbers mean nothing while it is hidden.
       const c = engine.content;
       const movie = dir.movie && c
-        ? `${c.label} ${(c.music * 100).toFixed(0)}%${c.conversation ? " · in conversation" : ""} · ${dir.movie.showing === "glow" ? "glow" : ""}`
+        ? `${c.label} ${(c.music * 100).toFixed(0)}%${c.conversation && c.dialogue_db != null ? ` · dialogue ${c.dialogue_db.toFixed(0)} dB vs music ${c.music_db == null ? "?" : c.music_db.toFixed(0)} dB` : ""} · ${dir.movie.showing === "glow" ? "glow" : ""}`
         : "";
       $("drift-note").textContent = movie && dir.movie.showing === "glow"
         ? `— ${movie}`

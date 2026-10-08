@@ -230,7 +230,7 @@ class Visualizer:
         self._reset_rhythm()
         self.drums = Drums()
         self.content_detector = ContentDetector(
-            fps=fps, conversation_hold=settings.mood.movie_conversation_hold,
+            fps=fps, dialogue_memory=settings.mood.movie_dialogue_memory,
             prominence_db=settings.mood.movie_prominence_db)
         self.content = Content()
         self.beat_driver = "mix"
@@ -288,8 +288,8 @@ class Visualizer:
                 retune(tuple(self.settings.mood.animations))
         if "mood.stem_weight" in touched:
             self._ensure_separator()
-        if "mood.movie_conversation_hold" in touched:
-            self.content_detector.conversation_hold = self.settings.mood.movie_conversation_hold
+        if "mood.movie_dialogue_memory" in touched:
+            self.content_detector.dialogue_memory = self.settings.mood.movie_dialogue_memory
         if "mood.movie_prominence_db" in touched:
             self.content_detector.prominence_db = self.settings.mood.movie_prominence_db
         if touched & {"effect.name", "mood.scene_weight", "mood.movie_classifier"}:

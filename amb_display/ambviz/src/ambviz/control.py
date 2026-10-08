@@ -62,7 +62,7 @@ CONTROLLABLE: frozenset[str] = frozenset({
     "mood.movie_glow",
     "mood.movie_crossfade",
     "mood.movie_classifier",
-    "mood.movie_conversation_hold",
+    "mood.movie_dialogue_memory",
     "mood.movie_prominence_db",
     "mood.switch_dwell",
     "mood.switch_margin",
