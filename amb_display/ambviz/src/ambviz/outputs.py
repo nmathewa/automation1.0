@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import socket
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -141,3 +142,34 @@ def make_output(settings: Settings) -> Output:
             f"unknown output.device {settings.output.device!r}; "
             f"expected one of {sorted(backends)}"
         ) from None
+
+
+class FrameDelay:
+    """Holds frames back by a set time before they are sent.
+
+    Timed rather than counted: the delay is a latency in milliseconds, and the
+    frame rate is only nominally constant. Changing the delay while running
+    takes effect on the next frame -- shortening it drops the frames that are
+    now overdue rather than flushing them in a burst, so the strip jumps
+    forward once instead of fast-forwarding.
+    """
+
+    def __init__(self, delay_ms: float = 0.0):
+        self.delay = max(0.0, delay_ms) / 1000.0
+        self._queue: deque[tuple[float, np.ndarray]] = deque()
+
+    def set(self, delay_ms: float) -> None:
+        self.delay = max(0.0, delay_ms) / 1000.0
+
+    def push(self, frame: np.ndarray, now: float) -> np.ndarray | None:
+        """Queue ``frame`` captured at ``now``; return the frame now due, if any."""
+        if self.delay <= 0.0 and not self._queue:
+            return frame
+        self._queue.append((now, frame))
+        due = None
+        while self._queue and now - self._queue[0][0] >= self.delay - 1e-4:
+            due = self._queue.popleft()[1]
+        return due
+
+    def __len__(self) -> int:
+        return len(self._queue)

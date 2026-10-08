@@ -111,7 +111,8 @@ def _load(args: argparse.Namespace) -> Settings:
 # ── subcommands ──────────────────────────────────────────────────────────────
 def cmd_run(args: argparse.Namespace) -> int:
     """Audio in, UDP packets out -- optionally publishing telemetry as it goes."""
-    from ambviz.outputs import make_output
+    from ambviz import sync
+    from ambviz.outputs import FrameDelay, make_output
     from ambviz.pipeline import Visualizer
     from ambviz.sources import make_source
 
@@ -164,17 +165,31 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     frames = 0
     started = last_report = time.monotonic()
+    delay = FrameDelay()
+    sync_for = None
     try:
         with source, output:
             for samples in source.frames():
                 # Drain control commands here so every mutation happens on this
                 # thread, never concurrently with process().
+                retune = False
                 if commands is not None:
                     for patch in commands.drain():
                         visualizer.apply(patch)
-                output.send(visualizer.process(samples))
-                frames += 1
+                        retune = retune or "output" in patch
+                # Looked up again when the device changes -- loopback follows
+                # the default output -- or when a delay setting is edited.
+                device = source.sync_device
+                if retune or device != sync_for:
+                    sync_for = device
+                    visualizer.sync = sync.resolve(settings, device)
+                    delay.set(visualizer.sync.delay_ms)
+                frame = visualizer.process(samples)
                 now = time.monotonic()
+                due = delay.push(frame, now)
+                if due is not None:
+                    output.send(due)
+                frames += 1
                 if not args.quiet and now - last_report >= 1.0:
                     # Overflows are how a capture buffer too large for the frame
                     # loop announces itself: audio arrives in bursts, the

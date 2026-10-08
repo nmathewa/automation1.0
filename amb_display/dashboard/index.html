@@ -195,6 +195,10 @@
   details.smoothing[open] summary::before { content: "▾ "; }
   /* One bar, four segments, widths = share of energy. Reads as a balance
      rather than four independent numbers, which is what it is. */
+  .drumlights { display: inline-flex; gap: 4px; }
+  .drumlights i { font-style: normal; font-size: 11px; font-weight: 600; width: 20px; height: 20px;
+    display: grid; place-items: center; border-radius: 4px; opacity: 0.25;
+    background: var(--accent); color: #fff; transition: opacity 60ms linear; }
   .stembar { display: flex; height: 14px; border-radius: 7px; overflow: hidden;
              background: var(--line); margin: 6px 0 2px; }
   .stembar i { transition: flex-grow .25s linear; flex-grow: 0; min-width: 0; }
@@ -346,6 +350,35 @@
         <div class="row">
           <input type="range" id="ctl-brightness" min="0" max="1" step="0.01">
           <output id="out-brightness">—</output>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Beat <small id="beat-note"></small></span>
+        <div class="row">
+          <select id="ctl-beatsrc" aria-label="What fires a beat">
+            <option value="auto">Beat: auto</option>
+            <option value="grid">Beat: tempo grid</option>
+            <option value="kick">Beat: kick</option>
+            <option value="snare">Beat: snare</option>
+            <option value="mix">Beat: any hit</option>
+            <option value="legacy">Beat: legacy</option>
+          </select>
+          <span class="drumlights" aria-hidden="true">
+            <i id="drum-kick" title="kick">K</i><i id="drum-snare" title="snare">S</i><i id="drum-hat" title="hat">H</i>
+          </span>
+        </div>
+        <div class="row">
+          <input type="range" id="ctl-drumsens" min="1" max="5" step="0.1"
+                 aria-label="Hit sensitivity: lower fires more">
+          <output id="out-drumsens">—</output>
+        </div>
+      </div>
+      <div class="ctl">
+        <span>Light delay <small id="sync-note"></small></span>
+        <div class="row">
+          <input type="range" id="ctl-delay" min="0" max="500" step="5"
+                 aria-label="Hold the lights back to meet late audio, for the device in use">
+          <output id="out-delay">—</output>
         </div>
       </div>
       <div class="ctl">
@@ -1381,8 +1414,15 @@
     const dir = engine.director;
     if (dir && dir.drift !== undefined) {
       const th = Number($("ctl-change").value) || 0.25;
-      $("drift-note").textContent =
-        `— ${dir.current || ""} · drift ${dir.drift.toFixed(2)}/${th.toFixed(2)} · ${dir.switches} switches`;
+      // movie shows its verdict first: most of a film is the glow, and the
+      // director's numbers mean nothing while it is hidden.
+      const c = engine.content;
+      const movie = dir.movie && c
+        ? `${c.label} ${(c.music * 100).toFixed(0)}%${c.conversation ? " · in conversation" : ""} · ${dir.movie.showing === "glow" ? "glow" : ""}`
+        : "";
+      $("drift-note").textContent = movie && dir.movie.showing === "glow"
+        ? `— ${movie}`
+        : `— ${movie ? movie + " " : ""}${dir.current || ""} · drift ${dir.drift.toFixed(2)}/${th.toFixed(2)} · ${dir.switches} switches`;
     } else {
       $("drift-note").textContent = "";
     }
@@ -1405,6 +1445,30 @@
       bar.dataset.on = "false";
       for (const seg of bar.children) seg.style.flexGrow = "1";
       $("stem-note").textContent = "— set weight above 0 and restart to enable";
+    }
+    // The beat: what is driving it, and where the grid is.
+    const tempo = engine.tempo;
+    if (tempo) {
+      const grid = tempo.locked ? `${Math.round(tempo.bpm)} BPM` : "finding tempo";
+      $("beat-note").textContent = `— ${grid} · following ${engine.beat_driver}`;
+    }
+    if (engine.drums) {
+      for (const k of ["kick", "snare", "hat"]) {
+        $(`drum-${k}`).style.opacity = String(0.25 + 0.75 * Number(engine.drums[k].strength || 0));
+      }
+    }
+    if (engine.beat_source && editing !== "beatsrc") $("ctl-beatsrc").value = engine.beat_source;
+    // The delay belongs to whichever device the audio is going through, and
+    // follows it when the default output changes.
+    const sync = engine.sync;
+    if (sync) {
+      const basis = { "configured": "saved", "bluetooth-default": "Bluetooth default",
+                      "none": "none needed" }[sync.basis] || sync.basis;
+      $("sync-note").textContent = sync.device ? `— ${sync.device} · ${basis}` : "— no device";
+      if (editing !== "delay") {
+        $("ctl-delay").value = sync.delay_ms;
+        $("out-delay").textContent = `${Math.round(sync.delay_ms)} ms`;
+      }
     }
     if (editing !== "minf") $("ctl-minf").value = engine.min_frequency;
     if (editing !== "maxf") $("ctl-maxf").value = engine.max_frequency;
@@ -1473,6 +1537,11 @@
       $("ctl-bins").value = cfg.dsp.fft_bins;
       $("out-bins").textContent = cfg.dsp.fft_bins;
     }
+    if (cfg.dsp.drum_sensitivity !== undefined && (force || editing !== "drumsens")) {
+      $("ctl-drumsens").value = cfg.dsp.drum_sensitivity;
+      $("out-drumsens").textContent = Number(cfg.dsp.drum_sensitivity).toFixed(1);
+    }
+    if (cfg.dsp.beat_source && (force || editing !== "beatsrc")) $("ctl-beatsrc").value = cfg.dsp.beat_source;
     if (force || editing !== "minf") $("ctl-minf").value = cfg.dsp.min_frequency;
     if (force || editing !== "maxf") $("ctl-maxf").value = cfg.dsp.max_frequency;
     for (const input of $("ctl-alphas").querySelectorAll("input")) {
@@ -1524,6 +1593,24 @@
     (v) => ({ output: { side_mode: v } }));
   bindSelect($("ctl-sideanim"), () => settingsCache?.output?.side_animation ?? "",
     (v) => ({ output: { side_animation: v } }));
+  bindSelect($("ctl-beatsrc"), () => settingsCache?.dsp?.beat_source,
+    (v) => ({ dsp: { beat_source: v } }));
+  bindLive($("ctl-drumsens"), "drumsens",
+    (v) => ($("out-drumsens").textContent = Number(v).toFixed(1)),
+    (v) => ({ dsp: { drum_sensitivity: Number(v) } }));
+  // Saved against the device in use, so a Bluetooth speaker and wired outputs
+  // each keep their own figure. Without a device there is nothing to key it
+  // to, and the rig-wide delay is set instead.
+  bindLive($("ctl-delay"), "delay",
+    (v) => ($("out-delay").textContent = `${Math.round(v)} ms`),
+    (v) => {
+      const device = engine?.sync?.device;
+      const out = settingsCache?.output || {};
+      if (!device) return { output: { delay_ms: Number(v) } };
+      const rig = Number(out.delay_ms || 0);
+      return { output: { device_delays: { ...(out.device_delays || {}),
+                                          [device]: Math.max(0, Number(v) - rig) } } };
+    });
   bindLive($("ctl-vocal"), "vocal",
     (v) => ($("out-vocal").textContent = Number(v).toFixed(2)),
     (v) => ({ dsp: { vocal_suppression: Number(v) } }));
@@ -1671,7 +1758,7 @@
     // to be.
     const side = $("ctl-sideanim");
     side.innerHTML = '<option value="">Sides: follow front</option>' +
-      names.filter((n) => n !== "auto")
+      names.filter((n) => n !== "auto" && n !== "movie")
            .map((n) => `<option value="${n}">Sides: ${TITLE(n)}</option>`).join("");
     // Health and settings race, and assigning `.value` before the options exist
     // silently does nothing -- leaving the select showing "follow front" for a

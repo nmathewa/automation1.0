@@ -907,3 +907,81 @@ EFFECTS["auto"] = Director
 
 #: Which effects react to beats rather than only to level.
 BEAT_DRIVEN = frozenset({"pixelwave", "puddles", "fire"})
+
+
+class MovieEffect(Effect):
+    """``auto`` while music plays; a dim, still glow the rest of the time.
+
+    A film is mostly talking, and an animated strip under a conversation is a
+    distraction -- but the score and the songs are what the strip is for. The
+    switch is :class:`~ambviz.content.ContentDetector`'s verdict, which is
+    already smoothed and hysteretic, so this only fades between the two.
+
+    Holds its own :class:`Director` rather than sharing ``auto``'s: the
+    director's state -- shortlist recency, the character anchor -- belongs to
+    one run of the strip, and nothing done here changes how ``auto`` behaves.
+    """
+
+    clone_across_nodes = False
+
+    def __init__(self, settings: Settings, width: int):
+        super().__init__(settings, width)
+        self.director = Director(settings, width)
+        fps = max(float(settings.audio.fps), 1.0)
+        self.mix = 0.0
+        """0 for the glow, 1 for the full director."""
+        self._hue = ExpFilter(0.6, alpha_decay=1.0 / (6.0 * fps), alpha_rise=1.0 / (6.0 * fps))
+        self._level = ExpFilter(0.0, alpha_decay=1.0 / (2.0 * fps), alpha_rise=1.0 / (1.0 * fps))
+        x = np.linspace(-1.0, 1.0, width)
+        # Brighter in the middle and falling to the ends, like light spilling
+        # off a screen rather than a bar drawn on the wall.
+        self._shape = 0.55 + 0.45 * np.exp(-(x * 1.4) ** 2)
+
+    def retune(self, animations: tuple[str, ...]) -> None:
+        self.director.retune(animations)
+
+    def _glow(self, f: Features) -> np.ndarray:
+        cfg = self.settings.mood
+        # Hue from the spectral centroid, but over seconds: a glow that changes
+        # colour with every word is the throbbing this mode exists to avoid.
+        hue = float(self._hue.update(0.55 + 0.35 * f.centroid))
+        level = float(self._level.update(0.0 if f.silent else np.clip(0.5 + f.slow, 0.0, 1.0)))
+        # Still: no drift, no pulse. Most of a film is this, and anything that
+        # moves on its own pulls the eye off the screen.
+        v = np.clip(cfg.movie_glow * level * self._shape, 0.0, 1.0)
+        return hsv_to_rgb(np.full(self.width, hue % 1.0), 0.65, v) * 255.0
+
+    def render(self, f: Features) -> np.ndarray:
+        cfg = self.settings.mood
+        target = 1.0 if f.content.label in ("music", "song") else 0.0
+        step = 1.0 / max(cfg.movie_crossfade * self.settings.audio.fps, 1.0)
+        self.mix = float(np.clip(self.mix + np.sign(target - self.mix) * step, 0.0, 1.0))
+        glow = self._glow(f)
+        if self.mix <= 0.0:
+            return glow
+        # The director keeps choosing even while hidden, so music arriving
+        # fades in on an animation that suits it rather than a stale one.
+        full = self.director.render(f)
+        return glow * (1.0 - self.mix) + full * self.mix
+
+    @property
+    def mood(self):
+        return self.director.mood
+
+    @property
+    def calm(self) -> float:
+        """How far into the glow, 0-1. The room's walls read this."""
+        return 1.0 - self.mix
+
+    @property
+    def current(self) -> str:
+        """The director's animation, for walls set to follow the front."""
+        return self.director.current
+
+    def state(self) -> dict:
+        return {**self.director.state(), "movie": {
+            "showing": "music" if self.mix >= 0.5 else "glow",
+            "mix": round(self.mix, 3)}}
+
+
+EFFECTS["movie"] = MovieEffect
