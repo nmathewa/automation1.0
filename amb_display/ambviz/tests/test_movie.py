@@ -237,11 +237,15 @@ def test_a_song_in_a_film_is_not_missed_in_its_quiet_bars():
 
 
 def conversation_over(bed, seconds, seed=0):
-    """Dialogue with ``bed`` running quietly underneath, 12 dB down -- where
-    the film measured -- so the gaps between lines are the music alone."""
+    """Dialogue with ``bed`` running quietly underneath, 12 dB under the
+    *spoken* parts -- where the film measured -- so the gaps between lines are
+    the music alone. Against the spoken parts, not the average: a conversation
+    is mostly pauses, and the average of one is far quieter than its voice."""
     talk = speech(seconds, seed=seed)
     under = bed[:len(talk)]
-    gain = np.sqrt(np.mean(talk.astype(float) ** 2) / max(np.mean(under.astype(float) ** 2), 1e-9))
+    voiced = np.abs(talk[:, 0]) > 0.05 * np.abs(talk[:, 0]).max()
+    gain = np.sqrt(np.mean(talk[voiced].astype(float) ** 2)
+                   / max(np.mean(under.astype(float) ** 2), 1e-9))
     return talk + under * gain * 10 ** (-12 / 20)
 
 
@@ -271,24 +275,59 @@ def test_music_swelling_up_after_the_conversation_is_shown():
     feed(v, conversation_over(pad(12.0), 12.0))
     assert v.effect.mix == 0.0
     feed(v, music(14.0))
-    assert not v.content.conversation
+    # Still remembered -- the memory is a minute -- but this music is as loud
+    # as the talking was, so it shows.
+    assert v.content.conversation
     assert v.effect.mix == pytest.approx(1.0)
 
 
-def test_a_song_playing_in_the_scene_is_shown_through_the_talking():
-    """A song on a car radio under the dialogue has drums on the beat; that is
-    a song, conversation or not."""
+def test_a_quiet_song_in_the_scene_stays_background():
+    """A song on a radio under the dialogue is background music like any other:
+    quieter than the conversation, so the glow holds."""
     v = movie()
-    feed(v, conversation_over(music(20.0, seed=3), 20.0))
-    assert v.content.groove >= 0.5 or v.content.conversation is False
+    scene = conversation_over(music(20.0, seed=3, with_voice=True), 20.0)
+    n, shown = v.samples_per_frame, []
+    for i in range(len(scene) // n):
+        v.process(scene[i * n:(i + 1) * n].astype(np.int16))
+        shown.append(v.effect.mix)
+    assert v.content.conversation
+    assert max(shown[int(6 * 60):]) == 0.0
+
+
+def test_music_as_loud_as_the_dialogue_is_shown_after_it():
+    """The comparison, the other way round: once the talking stops, music that
+    comes up to the conversation's level shows."""
+    v = movie()
+    feed(v, speech(10.0))
+    dialogue = v.content.dialogue_db
+    assert dialogue is not None
+    feed(v, music(12.0))
+    assert v.content.music_db >= dialogue - v.settings.mood.movie_prominence_db
     assert v.effect.mix == pytest.approx(1.0)
+
+
+def test_with_no_dialogue_heard_music_shows():
+    """Nothing to compare against: the start of a film, a music video."""
+    v = movie()
+    feed(v, music(10.0))
+    assert v.content.dialogue_db is None
+    assert v.effect.mix == pytest.approx(1.0)
+
+
+def test_the_dialogue_level_is_forgotten_after_a_minute():
+    v = movie(movie_dialogue_memory=5.0)
+    feed(v, speech(8.0))
+    assert v.content.conversation
+    quiet = pad(8.0) * 0.05
+    feed(v, quiet)
+    assert not v.content.conversation
 
 
 def test_conversation_settings_are_live():
     v = movie()
-    v.apply({"mood": {"movie_conversation_hold": 3.0, "movie_prominence_db": 14.0}})
-    assert v.content_detector.conversation_hold == 3.0
-    assert v.content_detector.prominence_db == 14.0
+    v.apply({"mood": {"movie_dialogue_memory": 30.0, "movie_prominence_db": 9.0}})
+    assert v.content_detector.dialogue_memory == 30.0
+    assert v.content_detector.prominence_db == 9.0
 
 
 def test_the_conversation_memory_does_not_need_the_classifier_to_be_sure():

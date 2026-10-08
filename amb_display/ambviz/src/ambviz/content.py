@@ -57,11 +57,12 @@ not:
 the gaps between lines the music is briefly the loudest thing, and judged a
 second at a time it *is* dominant. Measured on a film, YAMNet alternated
 music/speech every second for 48 s while the score sat 12.6 dB under the
-dialogue. So while anyone has spoken in the last ``conversation_hold`` seconds,
-music must be *prominent* to count: the quiet moments of the last six seconds
-within ``prominence_db`` of the loud ones (background music leaves a 15.7 dB
-spread on that film; songs measured 11.6 and 2.8 dB), or drums locked on the
-beat -- a song playing in the scene.
+dialogue. So the detector remembers how loud the dialogue was -- the loud part
+of each line, held for ``dialogue_memory`` seconds after the last one -- and
+music counts only if, measured where nobody is talking, it comes within
+``prominence_db`` of that. A song at normal volume clears it; background music,
+quiet songs in a scene included, does not. With no dialogue remembered there is
+nothing to compare against, and music shows.
 
 When YAMNet runs -- always, under ``movie``, if it is installed -- it decides:
 music counts only while its music score clearly leads its speech score. That is
@@ -78,6 +79,9 @@ import numpy as np
 
 from ambviz.dsp import EPS, ExpFilter
 
+
+#: Seconds after a line ends before the loudness counts as the music's.
+SETTLE_SECONDS = 0.5
 
 #: A vote at least this strong, held for SNAP_SECONDS, rises in SNAP_SECONDS
 #: more instead of over ``attack``.
@@ -103,8 +107,14 @@ class Content:
     groove: float = 0.0
     voice: float = 0.0
     conversation: bool = False
-    """Someone spoke within ``conversation_hold`` seconds; music must be
-    prominent to count."""
+    """A dialogue level is remembered; music must come within
+    ``prominence_db`` of it to count."""
+
+    dialogue_db: float | None = None
+    """The remembered loudness of the dialogue, dB, or None."""
+
+    music_db: float | None = None
+    """Loudness where nobody is talking, dB, or None before any such moment."""
     """How much of the energy is a centred voice band, 0-1."""
 
     def to_dict(self) -> dict:
@@ -130,13 +140,18 @@ class ContentDetector:
 
     def __init__(self, fps: float = 60.0, window: float = 3.0,
                  attack: float = 2.0, release: float = 1.5,
-                 conversation_hold: float = 6.0, prominence_db: float = 10.0):
+                 dialogue_memory: float = 60.0, prominence_db: float = 6.0):
         self.fps = float(fps)
-        self.conversation_hold = float(conversation_hold)
+        self.dialogue_memory = float(dialogue_memory)
         self.prominence_db = float(prominence_db)
-        self._db = np.full(int(6.0 * fps), -120.0)
+        self._db = np.full(int(1.0 * fps), -120.0)
         self._since_speech = 1e9
         self.conversation = False
+        self.dialogue_db: float | None = None
+        self.music_db: float | None = None
+        a_level = float(np.clip(1.0 / (2.0 * fps), 1e-4, 0.5))
+        self._a_dialogue = a_level
+        self._a_music = float(np.clip(1.0 / (0.5 * fps), 1e-4, 0.5))
         self.n = max(16, int(window * fps))
         self._level = np.zeros(self.n)
         self._voice = np.zeros(self.n)
@@ -165,6 +180,8 @@ class ContentDetector:
         self._strong_frames = 0
         self._db[:] = -120.0
         self._since_speech = 1e9
+        self.dialogue_db = None
+        self.music_db = None
         self._strong_needed = max(1, int(SNAP_SECONDS * fps))
         self.is_music = False
         self.content = Content()
@@ -323,14 +340,35 @@ class ContentDetector:
         if speech is not None and music_vote is not None:
             talking = talking or (speech >= 0.4 and speech >= music_vote)
         self._since_speech = 0.0 if talking else self._since_speech + 1.0 / self.fps
-        self.conversation = self._since_speech < self.conversation_hold
-        recent = self._db[self._db > -110.0]
-        spread = (float(np.percentile(recent, 90) - np.percentile(recent, 15))
-                  if len(recent) > self.fps else 0.0)
-        prominent = spread <= self.prominence_db or groove >= 0.5
-        if self.conversation and not prominent:
-            # Background music between lines: hold the glow, and let a running
-            # animation release as it would on dialogue.
+        level = float(self._db[-1])
+        if talking:
+            # The loud part of the line, not its pauses: the 90th percentile
+            # of the last second, averaged over a couple of seconds of talk.
+            loud = float(np.percentile(self._db, 90))
+            self.dialogue_db = (loud if self.dialogue_db is None
+                                else self.dialogue_db + self._a_dialogue * (loud - self.dialogue_db))
+        elif level > -110.0 and self._since_speech >= SETTLE_SECONDS:
+            # Only where nobody is talking, and not in the first moments after
+            # a line: its tail and the room's reverb are still the voice, and
+            # counting them put a film's score 7-9 dB under its dialogue where
+            # the separated stems measure 12.6. A song has no such gaps to wait
+            # for -- its vocals come with a band, so it does not read as
+            # talking at all.
+            self.music_db = (level if self.music_db is None
+                             else self.music_db + self._a_music * (level - self.music_db))
+        if self._since_speech > self.dialogue_memory:
+            self.dialogue_db = None
+        self.conversation = self.dialogue_db is not None
+        # No dialogue remembered: nothing to compare against, music shows. A
+        # conversation but no pause yet to measure the music in: unknown is
+        # not comparable, so the glow holds until there is a level to judge.
+        comparable = (self.dialogue_db is None
+                      or (self.music_db is not None
+                          and self.music_db >= self.dialogue_db - self.prominence_db))
+        if self.conversation and not comparable:
+            # Background music, measured against the conversation it sits
+            # under: hold the glow, and let a running animation release as it
+            # would on dialogue.
             vote = min(vote, self.OFF - 0.1)
         self._strong_frames = self._strong_frames + 1 if vote >= STRONG else 0
         snapping = self._strong_frames >= self._strong_needed
@@ -351,5 +389,6 @@ class ContentDetector:
         self.content = Content(music=music, label=label, accompaniment=accompaniment,
                                rhythm=rhythm, continuity=continuity, syllables=syllables,
                                held=held, groove=groove, voice=voice,
-                               conversation=self.conversation)
+                               conversation=self.conversation,
+                               dialogue_db=self.dialogue_db, music_db=self.music_db)
         return self.content
