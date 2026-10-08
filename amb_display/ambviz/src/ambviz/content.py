@@ -314,12 +314,14 @@ class ContentDetector:
         if vocal_share is not None:
             vote = 0.7 * vote + 0.3 * float(np.clip(1.0 - vocal_share, 0.0, 1.0))
 
-        # Is a conversation going on? YAMNet's word when it has one; otherwise
-        # a voice carrying most of the energy with little around it.
+        # Is a conversation going on? Either witness is enough: YAMNet hearing
+        # speech, or a voice carrying the energy with almost nothing around it.
+        # YAMNet alone let the memory lapse live, mid-dialogue, whenever it was
+        # less than sure -- while the voice measured 0.73 of the energy and
+        # the accompaniment 0.01.
+        talking = presence >= 1.0 and accompaniment < 0.35
         if speech is not None and music_vote is not None:
-            talking = speech >= 0.4 and speech >= music_vote
-        else:
-            talking = presence >= 1.0 and accompaniment < 0.35
+            talking = talking or (speech >= 0.4 and speech >= music_vote)
         self._since_speech = 0.0 if talking else self._since_speech + 1.0 / self.fps
         self.conversation = self._since_speech < self.conversation_hold
         recent = self._db[self._db > -110.0]

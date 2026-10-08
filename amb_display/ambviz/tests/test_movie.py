@@ -289,3 +289,16 @@ def test_conversation_settings_are_live():
     v.apply({"mood": {"movie_conversation_hold": 3.0, "movie_prominence_db": 14.0}})
     assert v.content_detector.conversation_hold == 3.0
     assert v.content_detector.prominence_db == 14.0
+
+
+def test_the_conversation_memory_does_not_need_the_classifier_to_be_sure():
+    """YAMNet unsure (speech 0.2) during plain dialogue: the voice measures
+    alone still keep the conversation remembered."""
+    det = ContentDetector(fps=60.0)
+    talk = speech(8.0)[:, 0]
+    n = 735
+    for i in range(len(talk) // n):
+        frame = talk[i * n:(i + 1) * n]
+        spec = np.abs(np.fft.rfft(np.pad(frame * np.hamming(n), (0, 2048 - n))))
+        det.update(spec, None, RATE, rhythm=0.1, wave=frame, speech=0.2, music_vote=0.05)
+    assert det.conversation
